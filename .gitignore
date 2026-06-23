@@ -1,0 +1,4 @@
+config.env
+.state/
+logs/
+.venv/
