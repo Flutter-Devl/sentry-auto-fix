@@ -106,6 +106,23 @@ class SentryClient:
         resp.raise_for_status()
         return resp.json()
 
+    def resolve_issue(self, issue_id: str) -> None:
+        """Mark a Sentry issue resolved (requires event:write or issue:write scope)."""
+        url = f"{self.base}/organizations/{self.org_slug}/issues/{issue_id}/"
+        resp = self.session.put(url, json={"status": "resolved"}, timeout=60)
+        resp.raise_for_status()
+
+    def find_issue_id_by_short_id(self, short_id: str, *, query: str = "is:unresolved") -> str | None:
+        for page, _link in self.iter_unresolved_issue_pages(
+            query=f'{query} {short_id}',
+            limit=25,
+            max_pages=1,
+        ):
+            for issue in page:
+                if issue.short_id.upper() == short_id.upper():
+                    return issue.id
+        return None
+
     @staticmethod
     def _to_issue(item: dict[str, Any]) -> SentryIssue:
         return SentryIssue(

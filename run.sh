@@ -673,15 +673,17 @@ Constraints:
 - Pre-fetched candidates file (may be empty): ${SCRIPT_DIR}/.state/sentry-candidates.json
 
 Fix quality — long-term, production-safe (NOT quick hacks):
-- Fix the ROOT CAUSE at the source (null guard, correct type, state lifecycle, async disposal) — not symptoms only
+- Fix the ROOT CAUSE in application code so the error **stops happening** — not just stops appearing in Sentry
 - ${code_hint}
-- Do NOT: empty catch blocks, blanket try/catch that swallows errors, catch-and-ignore, arbitrary delays/timeouts without reason
+- **NEVER use beforeSend / Sentry filters / return null from _sentryBeforeSend** for tier1 or tier2 issues — that only hides events; the bug still happens and Sentry stays unresolved
+- beforeSend filters are **banned** unless tier3 AND the stack is proven third-party/native-only AND no ${CODE_PATH}/ code can fix it — if so print NO_ACTION instead of a filter-only PR
+- For tier1/tier2: fix the throwing code path (null guard, correct type, auth handling, routing, state lifecycle) — the issue should be verifiable as fixed in Sentry after deploy
+- Do NOT: empty catch blocks, catch-and-ignore, onTimeout/onError handlers whose only purpose is to stop Sentry reporting
 - Do NOT: change unrelated code, refactor drive-by, or weaken validation just to stop Sentry noise
 - Do NOT: break existing user flows — if the fix could regress core paths, pick a safer option or print NO_ACTION
 - Prefer: minimal diff that a senior engineer would merge — correct, readable, maintainable
-- beforeSend / Sentry filters: ONLY for proven third-party/vendor noise (tier3), never to hide real app bugs in ${CODE_PATH}/
-- If the only viable "fix" is a hack or high regression risk → print NO_ACTION (do not push a bad PR)
-- In pr-body.md "Possible Solutions": include at least one rejected quick-fix option and explain why it was NOT chosen
+- If the only viable "fix" is a hack, filter, or high regression risk → print NO_ACTION (do not push a bad PR)
+- In pr-body.md "Possible Solutions": include a rejected **Sentry filter / beforeSend** option and explain why hiding events is NOT a real fix
 
 Procedure:
 1) PHASE: searching_sentry — fetch unresolved issues:
@@ -725,9 +727,10 @@ Procedure:
    - **Why not a quick fix:** one line on why hack/suppress-only options were rejected
 
    ## After merge — resolve in Sentry
-   1. Open: (same Link as above)
-   2. Verify fix on ${SENTRY_PROJECT_SLUG}
-   3. Resolve / Archive the issue in Sentry when events stop
+   1. Deploy / verify the fix on ${SENTRY_PROJECT_SLUG} (staging first)
+   2. Confirm **new events stopped** in Sentry (not just filtered — check issue event graph)
+   3. Open the issue link and click **Resolve** (or run: ./run.sh resolve-issue <SHORT_ID>)
+   4. Note: beforeSend filters do NOT resolve issues — they only hide new events; prefer root-cause fixes
 
    Then print final lines exactly:
    ISSUE_SHORT_ID=...
@@ -996,6 +999,58 @@ run_daemon_foreground() {
   done
 }
 
+resolve_sentry_issue() {
+  local short_id="${1:-}"
+  local issue_id="${2:-}"
+
+  if [[ -z "${SENTRY_AUTH_TOKEN:-}" ]]; then
+    echo "SENTRY_AUTH_TOKEN required in config.env (needs issue/event write scope to resolve)"
+    return 1
+  fi
+
+  if [[ -z "$issue_id" && -n "$short_id" ]]; then
+    issue_id="$("$PYTHON_BIN" - "$short_id" <<'PY'
+import os, sys
+sys.path.insert(0, os.environ["SCRIPT_DIR"])
+from sentry_client import SentryClient
+short_id = sys.argv[1]
+client = SentryClient(
+    auth_token=os.environ["SENTRY_AUTH_TOKEN"],
+    org_slug=os.environ["SENTRY_ORG_SLUG"],
+    region_url=os.environ.get("SENTRY_REGION_URL", "https://us.sentry.io"),
+    project_slug=os.environ.get("SENTRY_PROJECT_SLUG"),
+)
+issue_id = client.find_issue_id_by_short_id(short_id, query="is:unresolved")
+if not issue_id:
+    issue_id = client.find_issue_id_by_short_id(short_id, query="")
+print(issue_id or "")
+PY
+)"
+  fi
+
+  if [[ -z "$issue_id" ]]; then
+    echo "Could not find Sentry issue for: ${short_id:-$issue_id}"
+    return 1
+  fi
+
+  log_line "resolving Sentry issue id=${issue_id} (${short_id:-unknown})"
+  SCRIPT_DIR="$SCRIPT_DIR" SENTRY_AUTH_TOKEN="$SENTRY_AUTH_TOKEN" SENTRY_ORG_SLUG="$SENTRY_ORG_SLUG" \
+    SENTRY_REGION_URL="$SENTRY_REGION_URL" SENTRY_PROJECT_SLUG="$SENTRY_PROJECT_SLUG" \
+    "$PYTHON_BIN" - "$issue_id" <<'PY'
+import os, sys
+sys.path.insert(0, os.environ["SCRIPT_DIR"])
+from sentry_client import SentryClient
+client = SentryClient(
+    auth_token=os.environ["SENTRY_AUTH_TOKEN"],
+    org_slug=os.environ["SENTRY_ORG_SLUG"],
+    region_url=os.environ.get("SENTRY_REGION_URL", "https://us.sentry.io"),
+    project_slug=os.environ.get("SENTRY_PROJECT_SLUG"),
+)
+client.resolve_issue(sys.argv[1])
+print(f"Resolved issue {sys.argv[1]}")
+PY
+}
+
 mode="${1:-start}"
 mkdir -p "${SCRIPT_DIR}/logs" "${SCRIPT_DIR}/.state"
 
@@ -1032,6 +1087,10 @@ case "$mode" in
   reset-pagination)
     "$PYTHON_BIN" "${SCRIPT_DIR}/sentry_pagination.py" --state-dir "${SCRIPT_DIR}/.state" reset
     ;;
+  resolve-issue)
+    ensure_python_env
+    resolve_sentry_issue "${2:-}" "${3:-}"
+    ;;
   install-auto)
     install_auto
     ;;
@@ -1059,6 +1118,7 @@ case "$mode" in
     echo "  unlock         clear stuck lock"
     echo "  create-pr [branch]  open draft PR manually"
     echo "  reset-pagination  clear Sentry page/exclusion state"
+    echo "  resolve-issue <SHORT_ID>  mark issue resolved in Sentry (after deploy)"
     echo "  install-auto   reinstall background service"
     echo "  stop-auto      disable background auto-run"
     echo ""
