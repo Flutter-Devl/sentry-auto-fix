@@ -44,10 +44,14 @@ if [[ "$ACTIVE_PROFILE" == "laravel" ]]; then
   [[ -n "${LARAVEL_SENTRY_ORG_SLUG:-}"        ]] && SENTRY_ORG_SLUG="$LARAVEL_SENTRY_ORG_SLUG"
   [[ -n "${LARAVEL_SENTRY_PROJECT_SLUG:-}"    ]] && SENTRY_PROJECT_SLUG="$LARAVEL_SENTRY_PROJECT_SLUG"
   [[ -n "${LARAVEL_SENTRY_REGION_URL:-}"      ]] && SENTRY_REGION_URL="$LARAVEL_SENTRY_REGION_URL"
+  [[ -n "${LARAVEL_SENTRY_QUERY:-}"           ]] && SENTRY_QUERY="$LARAVEL_SENTRY_QUERY"
   [[ -n "${LARAVEL_SENTRY_AUTH_TOKEN:-}"      ]] && SENTRY_AUTH_TOKEN="$LARAVEL_SENTRY_AUTH_TOKEN"
   [[ -n "${LARAVEL_BITBUCKET_WORKSPACE:-}"    ]] && BITBUCKET_WORKSPACE="$LARAVEL_BITBUCKET_WORKSPACE"
   [[ -n "${LARAVEL_BITBUCKET_REPO_SLUG:-}"    ]] && BITBUCKET_REPO_SLUG="$LARAVEL_BITBUCKET_REPO_SLUG"
+  [[ -n "${LARAVEL_BITBUCKET_AUTH:-}"         ]] && BITBUCKET_AUTH="$LARAVEL_BITBUCKET_AUTH"
+  [[ -n "${LARAVEL_BITBUCKET_EMAIL:-}"        ]] && BITBUCKET_EMAIL="$LARAVEL_BITBUCKET_EMAIL"
   [[ -n "${LARAVEL_BITBUCKET_ACCESS_TOKEN:-}" ]] && BITBUCKET_ACCESS_TOKEN="$LARAVEL_BITBUCKET_ACCESS_TOKEN"
+  [[ -n "${LARAVEL_BITBUCKET_PR_ENABLED:-}"   ]] && BITBUCKET_PR_ENABLED="$LARAVEL_BITBUCKET_PR_ENABLED"
   [[ -n "${LARAVEL_BITBUCKET_PR_REVIEWERS:-}" ]] && BITBUCKET_PR_REVIEWERS="$LARAVEL_BITBUCKET_PR_REVIEWERS"
   PROJECT_PROFILE="laravel"
 fi
@@ -55,12 +59,10 @@ fi
 : "${REPO_ROOT:?REPO_ROOT is required in config.env (or LARAVEL_REPO_ROOT for laravel profile)}"
 : "${SENTRY_ORG_SLUG:?SENTRY_ORG_SLUG is required}"
 : "${SENTRY_PROJECT_SLUG:?SENTRY_PROJECT_SLUG is required}"
-: "${BITBUCKET_WORKSPACE:?BITBUCKET_WORKSPACE is required}"
-: "${BITBUCKET_REPO_SLUG:?BITBUCKET_REPO_SLUG is required}"
 
+# PR creation is optional — if no token is set, agent pushes the branch and you open the PR manually
 if [[ -z "${BITBUCKET_ACCESS_TOKEN:-}" ]]; then
-  echo "BITBUCKET_ACCESS_TOKEN is required in config.env (profile: ${ACTIVE_PROFILE})"
-  exit 1
+  BITBUCKET_PR_ENABLED=false
 fi
 
 CURSOR_BIN="${CURSOR_BIN:-cursor}"
@@ -239,39 +241,43 @@ preflight() {
   fi
   log_status "preflight: cursor=${CURSOR_BIN}"
 
-  log_status "preflight: checking Bitbucket API (${BITBUCKET_AUTH})"
-  local http_code
-  http_code="$(bitbucket_http_code \
-    "https://api.bitbucket.org/2.0/repositories/${BITBUCKET_WORKSPACE}/${BITBUCKET_REPO_SLUG}")"
-  if [[ "$http_code" != "200" ]]; then
+  if [[ -z "${BITBUCKET_ACCESS_TOKEN:-}" ]]; then
     BITBUCKET_PR_ENABLED=false
-    log_status "WARN: Bitbucket API returned HTTP ${http_code}"
+    log_status "preflight: no BITBUCKET_ACCESS_TOKEN — PR creation disabled (branch-push only)"
     echo ""
-    echo "Bitbucket auth check failed (HTTP ${http_code})."
-    echo "Fix config.env, then run: ./run.sh check-bitbucket"
+    echo "No Bitbucket token set — auto-PR disabled."
+    echo "The agent will fix the code and push the branch."
+    echo "Open the PR manually in Bitbucket after the run."
     echo ""
-    echo "Repository access token (from Bitbucket repo settings):"
-    echo "  BITBUCKET_AUTH=bearer"
-    echo "  BITBUCKET_ACCESS_TOKEN=\"<repo-access-token>\""
-    echo "  scopes needed: repository:read, pullrequest:write"
-    echo ""
-    echo "OR Atlassian API token (from id.atlassian.com):"
-    echo "  BITBUCKET_AUTH=basic"
-    echo "  BITBUCKET_EMAIL=\"you@company.com\""
-    echo "  BITBUCKET_ACCESS_TOKEN=\"<api-token>\""
-    echo "  scopes needed: read:repository:bitbucket, write:pullrequest:bitbucket"
-    echo ""
-    echo "Continuing without auto-PR (code fixes will still run)."
-    return 0
+  else
+    log_status "preflight: checking Bitbucket API (${BITBUCKET_AUTH})"
+    local http_code
+    http_code="$(bitbucket_http_code \
+      "https://api.bitbucket.org/2.0/repositories/${BITBUCKET_WORKSPACE}/${BITBUCKET_REPO_SLUG}")"
+    if [[ "$http_code" != "200" ]]; then
+      BITBUCKET_PR_ENABLED=false
+      log_status "WARN: Bitbucket API returned HTTP ${http_code}"
+      echo ""
+      echo "Bitbucket auth check failed (HTTP ${http_code}) — continuing without auto-PR."
+      echo "Fix the token and run: ./run.sh check-bitbucket"
+      echo ""
+    else
+      BITBUCKET_PR_ENABLED=true
+      log_status "preflight: Bitbucket ok"
+    fi
   fi
-  BITBUCKET_PR_ENABLED=true
   log_status "preflight: ok"
 }
 
 check_bitbucket() {
   echo "Bitbucket auth mode: ${BITBUCKET_AUTH}"
-  if [[ "${BITBUCKET_ACCESS_TOKEN}" == *PASTE_* ]] || [[ -z "${BITBUCKET_ACCESS_TOKEN}" ]]; then
-    echo "ERROR: Set BITBUCKET_ACCESS_TOKEN in config.env (one line, no line breaks)"
+  if [[ -z "${BITBUCKET_ACCESS_TOKEN:-}" ]]; then
+    echo "No token set — PR creation is disabled (branch-push only mode)."
+    echo "To enable auto-PR: set BITBUCKET_ACCESS_TOKEN in config.env"
+    return 0
+  fi
+  if [[ "${BITBUCKET_ACCESS_TOKEN}" == *PASTE_* ]]; then
+    echo "ERROR: Replace the placeholder in BITBUCKET_ACCESS_TOKEN with a real token"
     return 1
   fi
   if [[ "$BITBUCKET_ACCESS_TOKEN" == *$'\n'* ]]; then
@@ -630,25 +636,35 @@ force_unlock() {
 
 print_summary() {
   echo ""
-  echo "================ RUN SUMMARY ================"
-  if [[ ! -s "$LOG_FILE" ]]; then
-    echo "No log output yet. Log: $LOG_FILE"
-    echo "============================================="
-    return
-  fi
+  echo "════════════════ RUN SUMMARY ════════════════"
 
-  if grep -q "NO_ACTION" "$LOG_FILE" 2>/dev/null; then
-    echo "Result: NO_ACTION (no new issue to fix)"
-  fi
+  local short_id tier branch pr_url issue_url result_file="${STATE_DIR}/run-result.env"
 
-  grep -E "^(ISSUE_SHORT_ID|ISSUE_TIER|BRANCH_NAME|PR_URL):" "$LOG_FILE" 2>/dev/null | tail -10 || true
-  grep -E "\*\*ISSUE_SHORT_ID:\*\*|\*\*BRANCH_NAME:\*\*|\*\*PR_URL:\*\*" "$LOG_FILE" 2>/dev/null | tail -10 || true
-  grep -E "PR.*401|Bitbucket API token returned 401|FAILED:" "$LOG_FILE" 2>/dev/null | tail -5 || true
+  short_id="$(parse_last_run_field "ISSUE_SHORT_ID")"
+  tier="$(parse_last_run_field "ISSUE_TIER")"
+  branch="$(parse_last_run_field "BRANCH_NAME")"
+  pr_url="$(parse_last_run_field "PR_URL")"
+  issue_url="$(parse_last_run_field "ISSUE_URL")"
+
+  if [[ -f "$result_file" ]] && grep -q '^NO_ACTION=true$' "$result_file" 2>/dev/null; then
+    echo "  Result : NO_ACTION — no new actionable issue found"
+  elif [[ -n "$short_id" ]]; then
+    echo "  Result : ✓ fix pushed"
+    echo "  Issue  : ${short_id}${tier:+ (${tier})}"
+    [[ -n "$issue_url" ]] && echo "  Sentry : ${issue_url}"
+    [[ -n "$branch"   ]] && echo "  Branch : ${branch}"
+    if [[ -n "$pr_url" ]]; then
+      echo "  PR     : ${pr_url}"
+    elif [[ -n "$branch" && -n "$BITBUCKET_WORKSPACE" && -n "$BITBUCKET_REPO_SLUG" ]]; then
+      echo "  PR     : https://bitbucket.org/${BITBUCKET_WORKSPACE}/${BITBUCKET_REPO_SLUG}/pull-requests/new?source=${branch}&t=1"
+    fi
+  else
+    echo "  Result : unknown — check log below"
+  fi
 
   echo ""
-  echo "Full log: $LOG_FILE"
-  echo "Live status: $STATUS_FILE"
-  echo "============================================="
+  echo "  Log    : $LOG_FILE"
+  echo "════════════════════════════════════════════"
 }
 
 show_status() {
