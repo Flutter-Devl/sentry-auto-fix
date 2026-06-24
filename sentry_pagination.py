@@ -25,8 +25,12 @@ LAUNCHDARKLY_MARKERS = (
     "launch-darkly",
 )
 
+# ---------------------------------------------------------------------------
+# Flutter / Dart triage tiers
+# ---------------------------------------------------------------------------
+
 # tier1 — fix first (app bugs in lib/)
-TIER1_MARKERS = (
+FLUTTER_TIER1_MARKERS = (
     "typeerror",
     "type error",
     "is not a subtype",
@@ -55,13 +59,12 @@ TIER1_MARKERS = (
 )
 
 # tier1 — targeted Sentry searches (always run fresh before tier3 pagination)
-TIER1_SEARCH_QUERIES = (
+FLUTTER_TIER1_SEARCH_QUERIES = (
     "TypeError",
     "PlatformException",
     "StateError",
     "GoRouter",
     "GoError",
-    "StateError",
     "go_router",
     "Null check",
     "unauthorized",
@@ -75,14 +78,15 @@ TIER1_SEARCH_QUERIES = (
 )
 
 # tier2 — general app issues in lib/
-TIER2_SEARCH_QUERIES = (
+FLUTTER_TIER2_SEARCH_QUERIES = (
     "Riverpod",
     "Provider",
     "AsyncError",
     "JsonUnsupportedObjectError",
 )
+
 # tier3 — last resort (vendor / native noise) — only when tier1/2 exhausted
-TIER3_MARKERS = (
+FLUTTER_TIER3_MARKERS = (
     *LAUNCHDARKLY_MARKERS,
     "apphang",
     "app hang",
@@ -100,6 +104,82 @@ TIER3_MARKERS = (
     "firebase",
     "native crash",
 )
+
+# ---------------------------------------------------------------------------
+# Laravel / PHP triage tiers
+# ---------------------------------------------------------------------------
+
+# tier1 — critical database, auth, and runtime PHP errors (fix first)
+LARAVEL_TIER1_MARKERS = (
+    "queryexception",
+    "pdoexception",
+    "modelnotfoundexception",
+    "authorizationexception",
+    "authenticationexception",
+    "unauthenticated",
+    "unauthorized",
+    "401",
+    "403",
+    "validationexception",
+    "typeerror",
+    "null value",
+    "call to a member function",
+    "trying to get property",
+    "undefined variable",
+    "undefined index",
+    "undefined array key",
+    "errorexception",
+    "badmethodcallexception",
+    "invalidargumentexception",
+    "runtimeexception",
+    "notfoundhttpexception",
+)
+
+LARAVEL_TIER1_SEARCH_QUERIES = (
+    "QueryException",
+    "ModelNotFoundException",
+    "AuthorizationException",
+    "AuthenticationException",
+    "ValidationException",
+    "PDOException",
+    "Unauthenticated",
+    "TypeError",
+    "ErrorException",
+    "BadMethodCallException",
+    "NotFoundHttpException",
+)
+
+# tier2 — queue, HTTP client, mail, and general framework errors (targeted Sentry searches)
+LARAVEL_TIER2_SEARCH_QUERIES = (
+    "HttpException",
+    "ConnectionException",
+    "SocketException",
+    "TimeoutException",
+    "Job",
+    "Queue",
+    "CommandException",
+)
+
+# tier3 — last resort: vendor/package noise, Horizon, Telescope, Debugbar
+LARAVEL_TIER3_MARKERS = (
+    "vendor/",
+    "horizon",
+    "telescope",
+    "debugbar",
+    "clockwork",
+    "sentry\\laravel",
+    "barryvdh",
+    "native crash",
+    "apphang",
+)
+
+# ---------------------------------------------------------------------------
+# Backward-compat aliases (used in existing call sites below)
+# ---------------------------------------------------------------------------
+TIER1_MARKERS = FLUTTER_TIER1_MARKERS
+TIER1_SEARCH_QUERIES = FLUTTER_TIER1_SEARCH_QUERIES
+TIER2_SEARCH_QUERIES = FLUTTER_TIER2_SEARCH_QUERIES
+TIER3_MARKERS = FLUTTER_TIER3_MARKERS
 
 
 def issue_haystack(issue: Any) -> str:
@@ -127,25 +207,38 @@ def is_vendor_noise_issue(issue: Any) -> bool:
 
 
 def classify_issue_tier(issue: Any) -> int:
-    """Return 1 (app bugs first), 2 (general lib/), or 3 (vendor/native last)."""
+    """Return 1 (app bugs first), 2 (general app code), or 3 (vendor/native last).
+
+    Tier selection is profile-aware: PROJECT_PROFILE env var switches between
+    Flutter (default) and Laravel marker/path sets.
+    """
     haystack = issue_haystack(issue)
+    profile = os.environ.get("PROJECT_PROFILE", "flutter").lower()
 
-    if any(marker in haystack for marker in TIER1_MARKERS):
-        return 1
-
-    if any(marker in haystack for marker in TIER3_MARKERS):
-        return 3
-
-    if "lib/" in haystack:
+    if profile == "laravel":
+        if any(marker in haystack for marker in LARAVEL_TIER1_MARKERS):
+            return 1
+        if any(marker in haystack for marker in LARAVEL_TIER3_MARKERS):
+            return 3
+        if "app/" in haystack or "routes/" in haystack:
+            return 2
+        if "vendor/" in haystack:
+            return 3
         return 2
-
-    if any(
-        marker in haystack
-        for marker in ("ios/", "android/", "uikit", "java.", "objc", "swift")
-    ):
-        return 3
-
-    return 2
+    else:
+        # Flutter / default
+        if any(marker in haystack for marker in FLUTTER_TIER1_MARKERS):
+            return 1
+        if any(marker in haystack for marker in FLUTTER_TIER3_MARKERS):
+            return 3
+        if "lib/" in haystack:
+            return 2
+        if any(
+            marker in haystack
+            for marker in ("ios/", "android/", "uikit", "java.", "objc", "swift")
+        ):
+            return 3
+        return 2
 
 STATE_FILE = "sentry-pagination.json"
 CANDIDATES_FILE = "sentry-candidates.json"
@@ -292,6 +385,14 @@ def search_issues(
     return dedupe_issues(found)
 
 
+def _get_tier_search_queries() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return (tier1_queries, tier2_queries) for the active PROJECT_PROFILE."""
+    profile = os.environ.get("PROJECT_PROFILE", "flutter").lower()
+    if profile == "laravel":
+        return LARAVEL_TIER1_SEARCH_QUERIES, LARAVEL_TIER2_SEARCH_QUERIES
+    return FLUTTER_TIER1_SEARCH_QUERIES, FLUTTER_TIER2_SEARCH_QUERIES
+
+
 def fetch_candidates_by_tier_priority(
     client: Any,
     *,
@@ -317,9 +418,11 @@ def fetch_candidates_by_tier_priority(
         )
         return candidates, tier, issues, next_cursor, pages
 
+    tier1_queries, tier2_queries = _get_tier_search_queries()
+
     # --- tier1: always search first (ignore pagination cursor) ---
     tier1_issues: list[Any] = []
-    for term in TIER1_SEARCH_QUERIES:
+    for term in tier1_queries:
         tier1_issues.extend(
             search_issues(
                 client,
@@ -343,7 +446,7 @@ def fetch_candidates_by_tier_priority(
 
     # --- tier2: targeted + general unresolved scan (no cursor) ---
     tier2_issues: list[Any] = []
-    for term in TIER2_SEARCH_QUERIES:
+    for term in tier2_queries:
         tier2_issues.extend(
             search_issues(
                 client,

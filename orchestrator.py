@@ -219,6 +219,7 @@ def process_issue(issue_id: str | None = None) -> int:
                 stack_hint=stack_hint,
                 base_branch=base_branch,
                 branch_name=branch,
+                profile=os.environ.get("PROJECT_PROFILE", "flutter"),
             )
 
             result = run_cursor_agent(

@@ -3,21 +3,20 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SCRIPT_DIR}/config.env"
-LOG_FILE="${SCRIPT_DIR}/logs/run.log"
-STATUS_FILE="${SCRIPT_DIR}/.state/run.status"
-LAST_RUN_FILE="${SCRIPT_DIR}/.state/last-run.log"
 
-log_line() {
-  local msg="[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"
-  echo "$msg"
-  echo "$msg" >> "$LOG_FILE"
-}
-
-log_status() {
-  local msg="[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"
-  echo "$msg" > "$STATUS_FILE"
-  echo "$msg" >> "$LOG_FILE"
-}
+# ---------------------------------------------------------------------------
+# Profile argument — optional first positional arg: flutter | laravel
+# Shift it off so remaining positional args ($1, $2, ...) are the subcommand.
+# Examples:
+#   ./run.sh once                → flutter (default)
+#   ./run.sh flutter once        → flutter profile explicitly
+#   ./run.sh laravel daemon      → laravel profile
+# ---------------------------------------------------------------------------
+ACTIVE_PROFILE=""
+if [[ "${1:-}" == "flutter" || "${1:-}" == "laravel" ]]; then
+  ACTIVE_PROFILE="$1"
+  shift
+fi
 
 if [[ ! -f "$CONFIG_FILE" ]]; then
   echo "Missing config.env. Run: cp config.example.env config.env"
@@ -29,14 +28,38 @@ set -a
 source "$CONFIG_FILE"
 set +a
 
-: "${REPO_ROOT:?REPO_ROOT is required in config.env}"
+# ---------------------------------------------------------------------------
+# Finalize active profile: CLI arg > config PROJECT_PROFILE > default flutter
+# ---------------------------------------------------------------------------
+ACTIVE_PROFILE="${ACTIVE_PROFILE:-${PROJECT_PROFILE:-flutter}}"
+
+# ---------------------------------------------------------------------------
+# Laravel profile overlay — override base keys with LARAVEL_* values so the
+# rest of the script is profile-agnostic (it always reads the base key names).
+# ---------------------------------------------------------------------------
+if [[ "$ACTIVE_PROFILE" == "laravel" ]]; then
+  [[ -n "${LARAVEL_REPO_ROOT:-}"              ]] && REPO_ROOT="$LARAVEL_REPO_ROOT"
+  [[ -n "${LARAVEL_GIT_BASE_BRANCH:-}"        ]] && GIT_BASE_BRANCH="$LARAVEL_GIT_BASE_BRANCH"
+  [[ -n "${LARAVEL_CODE_PATH:-}"              ]] && CODE_PATH="$LARAVEL_CODE_PATH"
+  [[ -n "${LARAVEL_SENTRY_ORG_SLUG:-}"        ]] && SENTRY_ORG_SLUG="$LARAVEL_SENTRY_ORG_SLUG"
+  [[ -n "${LARAVEL_SENTRY_PROJECT_SLUG:-}"    ]] && SENTRY_PROJECT_SLUG="$LARAVEL_SENTRY_PROJECT_SLUG"
+  [[ -n "${LARAVEL_SENTRY_REGION_URL:-}"      ]] && SENTRY_REGION_URL="$LARAVEL_SENTRY_REGION_URL"
+  [[ -n "${LARAVEL_SENTRY_AUTH_TOKEN:-}"      ]] && SENTRY_AUTH_TOKEN="$LARAVEL_SENTRY_AUTH_TOKEN"
+  [[ -n "${LARAVEL_BITBUCKET_WORKSPACE:-}"    ]] && BITBUCKET_WORKSPACE="$LARAVEL_BITBUCKET_WORKSPACE"
+  [[ -n "${LARAVEL_BITBUCKET_REPO_SLUG:-}"    ]] && BITBUCKET_REPO_SLUG="$LARAVEL_BITBUCKET_REPO_SLUG"
+  [[ -n "${LARAVEL_BITBUCKET_ACCESS_TOKEN:-}" ]] && BITBUCKET_ACCESS_TOKEN="$LARAVEL_BITBUCKET_ACCESS_TOKEN"
+  [[ -n "${LARAVEL_BITBUCKET_PR_REVIEWERS:-}" ]] && BITBUCKET_PR_REVIEWERS="$LARAVEL_BITBUCKET_PR_REVIEWERS"
+  PROJECT_PROFILE="laravel"
+fi
+
+: "${REPO_ROOT:?REPO_ROOT is required in config.env (or LARAVEL_REPO_ROOT for laravel profile)}"
 : "${SENTRY_ORG_SLUG:?SENTRY_ORG_SLUG is required}"
 : "${SENTRY_PROJECT_SLUG:?SENTRY_PROJECT_SLUG is required}"
 : "${BITBUCKET_WORKSPACE:?BITBUCKET_WORKSPACE is required}"
 : "${BITBUCKET_REPO_SLUG:?BITBUCKET_REPO_SLUG is required}"
 
 if [[ -z "${BITBUCKET_ACCESS_TOKEN:-}" ]]; then
-  echo "BITBUCKET_ACCESS_TOKEN is required in config.env"
+  echo "BITBUCKET_ACCESS_TOKEN is required in config.env (profile: ${ACTIVE_PROFILE})"
   exit 1
 fi
 
@@ -58,11 +81,33 @@ CLOSE_SOURCE_BRANCH="${CLOSE_SOURCE_BRANCH:-true}"
 BITBUCKET_PR_REVIEWERS="${BITBUCKET_PR_REVIEWERS:-}"
 BITBUCKET_AUTH="${BITBUCKET_AUTH:-bearer}"
 BITBUCKET_PR_ENABLED="${BITBUCKET_PR_ENABLED:-true}"
-LOCK_DIR="${SCRIPT_DIR}/.state/run.lock"
-USER_BRANCH_FILE="${SCRIPT_DIR}/.state/user-branch.txt"
-WORKTREE_PATH="${SCRIPT_DIR}/.state/fix-worktree"
+
+# ---------------------------------------------------------------------------
+# Profile-namespaced paths — each profile gets its own state + log directory
+# so flutter and laravel runs never clobber each other's state.
+# ---------------------------------------------------------------------------
+STATE_DIR="${SCRIPT_DIR}/.state/${ACTIVE_PROFILE}"
+LOG_DIR="${SCRIPT_DIR}/logs/${ACTIVE_PROFILE}"
+LOG_FILE="${LOG_DIR}/run.log"
+STATUS_FILE="${STATE_DIR}/run.status"
+LAST_RUN_FILE="${STATE_DIR}/last-run.log"
+LOCK_DIR="${STATE_DIR}/run.lock"
+USER_BRANCH_FILE="${STATE_DIR}/user-branch.txt"
+WORKTREE_PATH="${STATE_DIR}/fix-worktree"
 VENV_DIR="${SCRIPT_DIR}/.venv"
 PYTHON_BIN="python3"
+
+log_line() {
+  local msg="[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"
+  echo "$msg"
+  echo "$msg" >> "$LOG_FILE"
+}
+
+log_status() {
+  local msg="[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"
+  echo "$msg" > "$STATUS_FILE"
+  echo "$msg" >> "$LOG_FILE"
+}
 
 ensure_python_env() {
   if [[ ! -d "$VENV_DIR" ]]; then
@@ -257,8 +302,8 @@ parse_last_run_field() {
   local field="$1"
   local value=""
 
-  if [[ -f "${SCRIPT_DIR}/.state/run-result.env" ]]; then
-    value="$(grep -E "^${field}=" "${SCRIPT_DIR}/.state/run-result.env" 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+  if [[ -f "${STATE_DIR}/run-result.env" ]]; then
+    value="$(grep -E "^${field}=" "${STATE_DIR}/run-result.env" 2>/dev/null | tail -1 | cut -d= -f2- || true)"
   fi
 
   if [[ -z "$value" && -f "$LAST_RUN_FILE" ]]; then
@@ -276,7 +321,7 @@ parse_last_run_field() {
 }
 
 extract_run_result_env() {
-  local result_file="${SCRIPT_DIR}/.state/run-result.env"
+  local result_file="${STATE_DIR}/run-result.env"
   : > "$result_file"
   if [[ -f "$LAST_RUN_FILE" ]]; then
     "$PYTHON_BIN" "${SCRIPT_DIR}/parse_agent_output.py" env "$LAST_RUN_FILE" "$result_file" || true
@@ -285,20 +330,20 @@ extract_run_result_env() {
 
 prepare_sentry_pagination() {
   log_line "pagination: auto-prefetch (pages=${SENTRY_MAX_PAGES}, size=${SENTRY_PAGE_SIZE})"
-  "$PYTHON_BIN" "${SCRIPT_DIR}/sentry_pagination.py" --state-dir "${SCRIPT_DIR}/.state" prepare \
+  "$PYTHON_BIN" "${SCRIPT_DIR}/sentry_pagination.py" --state-dir "${STATE_DIR}" prepare \
     >> "$LOG_FILE" 2>&1 || log_line "pagination: prefetch failed (agent will search MCP directly)"
 }
 
 post_run_sentry_pagination() {
-  "$PYTHON_BIN" "${SCRIPT_DIR}/sentry_pagination.py" --state-dir "${SCRIPT_DIR}/.state" \
-    post-run --result "${SCRIPT_DIR}/.state/run-result.env" >> "$LOG_FILE" 2>&1 || true
+  "$PYTHON_BIN" "${SCRIPT_DIR}/sentry_pagination.py" --state-dir "${STATE_DIR}" \
+    post-run --result "${STATE_DIR}/run-result.env" >> "$LOG_FILE" 2>&1 || true
 }
 
 read_sentry_effective_query() {
   local query="${SENTRY_QUERY}"
-  if [[ -f "${SCRIPT_DIR}/.state/sentry-search-context.txt" ]]; then
+  if [[ -f "${STATE_DIR}/sentry-search-context.txt" ]]; then
     local ctx
-    ctx="$(grep -E '^effective_query=' "${SCRIPT_DIR}/.state/sentry-search-context.txt" 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+    ctx="$(grep -E '^effective_query=' "${STATE_DIR}/sentry-search-context.txt" 2>/dev/null | tail -1 | cut -d= -f2- || true)"
     [[ -n "$ctx" ]] && query="$ctx"
   fi
   echo "$query"
@@ -366,7 +411,7 @@ PY
   return 1
 }
 
-PR_BODY_FILE="${SCRIPT_DIR}/.state/pr-body.md"
+PR_BODY_FILE="${STATE_DIR}/pr-body.md"
 
 build_sentry_issue_url() {
   local short_id="$1"
@@ -483,7 +528,7 @@ maybe_create_pr_from_last_run() {
 }
 
 acquire_lock() {
-  mkdir -p "${SCRIPT_DIR}/.state"
+  mkdir -p "${STATE_DIR}"
 
   if [[ -d "$LOCK_DIR" ]]; then
     local lock_pid=""
@@ -670,7 +715,7 @@ Constraints:
 - Base branch: ${GIT_BASE_BRANCH}
 - PR draft: ${PR_DRAFT} (created by run.sh, not by you)
 - PR reviewers: ${BITBUCKET_PR_REVIEWERS}
-- Pre-fetched candidates file (may be empty): ${SCRIPT_DIR}/.state/sentry-candidates.json
+- Pre-fetched candidates file (may be empty): ${STATE_DIR}/sentry-candidates.json
 
 Fix quality — long-term, production-safe (NOT quick hacks):
 - Fix the ROOT CAUSE in application code so the error **stops happening** — not just stops appearing in Sentry
@@ -687,7 +732,7 @@ Fix quality — long-term, production-safe (NOT quick hacks):
 
 Procedure:
 1) PHASE: searching_sentry — fetch unresolved issues:
-   - **MANDATORY:** Read ${SCRIPT_DIR}/.state/sentry-candidates.json first.
+   - **MANDATORY:** Read ${STATE_DIR}/sentry-candidates.json first.
    - If it contains candidates, you MUST pick from that list only — do NOT pick issues outside it.
    - Pick the **first** candidate in the file (lowest tier / highest priority). If tier is "tier1", fix that issue — never pick tier3 while tier1 candidates exist.
    - If candidates.json is empty, call search_issues MCP with tier1 queries first: TypeError, PlatformException, StateError, GoRouter, Null check, unauthorized — before any App Hanging / LaunchDarkly issue.
@@ -699,13 +744,13 @@ Procedure:
    - **tier1 (FIRST):** type errors, routing/navigation errors, state lifecycle, null/type-null, unauthorized/auth (401/403), platform/runtime exceptions — stack in ${pattern_hint} preferred
    - **tier2:** other provider/JSON/async/framework issues in ${pattern_hint}
    - **tier3 (LAST — only when tier1 and tier2 are exhausted on current pages):** LaunchDarkly, App Hanging, ANR, pasteboard hangs, third-party SDK noise (Adjust/Iterable), native-only stacks
-   If ${SCRIPT_DIR}/.state/sentry-candidates.json lists issues with "tier", pick the lowest tier number first.
+   If ${STATE_DIR}/sentry-candidates.json lists issues with "tier", pick the lowest tier number first.
    Do NOT pick tier3 (LaunchDarkly, App Hang, ANR, pasteboard, vendor filters) while any tier1 or tier2 issue remains unbranched and actionable in Sentry or in sentry-candidates.json.
 3) PHASE: fixing_code — read surrounding code + similar fixes in repo; implement a durable root-cause fix in ${fix_workspace}/${CODE_PATH}/; run targeted tests if relevant; verify you did not break adjacent behavior.
 4) PHASE: committing — in ${fix_workspace}: commit: fix(sentry): <SHORT_ID> <title>
 5) PHASE: pushing — in ${fix_workspace}: push branch fix/sentry-<shortid-lower>-<slug> to origin
 6) PHASE: done — write PR body to:
-   ${SCRIPT_DIR}/.state/pr-body.md
+   ${STATE_DIR}/pr-body.md
 
    Use this EXACT markdown structure (fill every field from Sentry MCP):
 
@@ -757,7 +802,7 @@ run_once_locked() {
     return 0
   fi
 
-  mkdir -p "${SCRIPT_DIR}/logs" "${SCRIPT_DIR}/.state"
+  mkdir -p "${LOG_DIR}" "${STATE_DIR}"
   trap 'cleanup_run_environment; release_lock' EXIT INT TERM
 
   log_status "starting run"
@@ -783,7 +828,7 @@ run_once_locked() {
 
   : > "$LAST_RUN_FILE"
   : > "$PR_BODY_FILE"
-  rm -f "${SCRIPT_DIR}/.state/run-result.env"
+  rm -f "${STATE_DIR}/run-result.env"
   set +e
   run_once 2>&1 | tee -a "$LOG_FILE" | tee "$LAST_RUN_FILE"
   local agent_exit=${PIPESTATUS[0]}
@@ -812,8 +857,8 @@ run_once_locked() {
 }
 
 last_run_no_action() {
-  if [[ -f "${SCRIPT_DIR}/.state/run-result.env" ]]; then
-    grep -q '^NO_ACTION=true$' "${SCRIPT_DIR}/.state/run-result.env" 2>/dev/null
+  if [[ -f "${STATE_DIR}/run-result.env" ]]; then
+    grep -q '^NO_ACTION=true$' "${STATE_DIR}/run-result.env" 2>/dev/null
     return $?
   fi
   if [[ -f "$LAST_RUN_FILE" ]] && grep -qE 'BRANCH_NAME=fix/sentry-' "$LAST_RUN_FILE"; then
@@ -855,10 +900,10 @@ run_loop() {
   log_line "loop: finished after ${count} run(s)"
 }
 
-PLIST_LABEL="com.sentry.autofix"
+PLIST_LABEL="com.sentry.autofix.${ACTIVE_PROFILE}"
 PLIST_PATH="${HOME}/Library/LaunchAgents/${PLIST_LABEL}.plist"
-DAEMON_LOG="${SCRIPT_DIR}/logs/daemon.log"
-DAEMON_ERR="${SCRIPT_DIR}/logs/daemon.err"
+DAEMON_LOG="${LOG_DIR}/daemon.log"
+DAEMON_ERR="${LOG_DIR}/daemon.err"
 
 install_auto() {
   local abs_run abs_dir uid domain
@@ -867,7 +912,7 @@ install_auto() {
   uid="$(id -u)"
   domain="gui/${uid}"
 
-  mkdir -p "${SCRIPT_DIR}/logs" "${HOME}/Library/LaunchAgents"
+  mkdir -p "${LOG_DIR}" "${HOME}/Library/LaunchAgents"
   chmod +x "$abs_run"
 
   cat > "$PLIST_PATH" <<PLIST
@@ -881,6 +926,7 @@ install_auto() {
   <array>
     <string>/bin/bash</string>
     <string>${abs_run}</string>
+    <string>${ACTIVE_PROFILE}</string>
     <string>daemon</string>
   </array>
   <key>WorkingDirectory</key>
@@ -1052,7 +1098,7 @@ PY
 }
 
 mode="${1:-start}"
-mkdir -p "${SCRIPT_DIR}/logs" "${SCRIPT_DIR}/.state"
+mkdir -p "${LOG_DIR}" "${STATE_DIR}"
 
 case "$mode" in
   start)
@@ -1085,7 +1131,7 @@ case "$mode" in
     fi
     ;;
   reset-pagination)
-    "$PYTHON_BIN" "${SCRIPT_DIR}/sentry_pagination.py" --state-dir "${SCRIPT_DIR}/.state" reset
+    "$PYTHON_BIN" "${SCRIPT_DIR}/sentry_pagination.py" --state-dir "${STATE_DIR}" reset
     ;;
   resolve-issue)
     ensure_python_env
@@ -1101,7 +1147,11 @@ case "$mode" in
     auto_status
     ;;
   *)
-    echo "Usage: $0 [command]"
+    echo "Usage: $0 [flutter|laravel] [command]"
+    echo ""
+    echo "Profile (optional first arg — defaults to PROJECT_PROFILE in config.env):"
+    echo "  flutter        target Flutter repo + Sentry project (default)"
+    echo "  laravel        target Laravel repo + Sentry project (uses LARAVEL_* config keys)"
     echo ""
     echo "Default (no args):"
     echo "  start          auto-install background service on first run, then run forever"
@@ -1119,8 +1169,14 @@ case "$mode" in
     echo "  create-pr [branch]  open draft PR manually"
     echo "  reset-pagination  clear Sentry page/exclusion state"
     echo "  resolve-issue <SHORT_ID>  mark issue resolved in Sentry (after deploy)"
-    echo "  install-auto   reinstall background service"
+    echo "  install-auto   reinstall background service (per-profile LaunchAgent)"
     echo "  stop-auto      disable background auto-run"
+    echo ""
+    echo "Examples:"
+    echo "  $0 once                      # Flutter (default)"
+    echo "  $0 flutter once              # Flutter explicit"
+    echo "  $0 laravel once              # Laravel"
+    echo "  $0 laravel install-auto      # Install laravel background service"
     echo ""
     echo "Automatic each cycle (no manual steps): Sentry pagination, fix, push, draft PR"
     exit 1

@@ -16,8 +16,21 @@ def build_fix_prompt(
     stack_hint: str,
     base_branch: str,
     branch_name: str,
+    profile: str = "flutter",
 ) -> str:
-    return f"""You are fixing a production crash from Sentry for the Abyan Flutter app.
+    """Build a Cursor Agent fix prompt tailored to the active project profile."""
+    if profile == "laravel":
+        project_label = "Laravel API"
+        pattern_hint = "Match Laravel/PHP patterns (Eloquent, jobs, middleware, form requests, try/catch, null-safe operators)."
+        code_path = "app/"
+        test_cmd = "php artisan test"
+    else:
+        project_label = "Flutter mobile app"
+        pattern_hint = "Match Flutter/Dart patterns (Riverpod, feature folders, async guards, mounted checks, existing SDK usage)."
+        code_path = "lib/"
+        test_cmd = "flutter test"
+
+    return f"""You are fixing a production error from Sentry for the {project_label}.
 
 ## Sentry issue
 - ID: {issue_short_id} (internal id: {issue_id})
@@ -30,10 +43,11 @@ def build_fix_prompt(
 ## Instructions
 1. Use the **Sentry MCP** tools to fetch full issue details, latest event, and stack trace from the URL above.
 2. Locate the root cause in this repository and implement a **minimal, correct fix**.
-3. Follow existing project patterns (Riverpod, feature folders, error handling).
-4. Do **not** commit secrets, tokens, or .env files.
-5. Run targeted tests if reasonable: `flutter test` on affected files.
-6. Stage and commit on the current branch with message:
+3. {pattern_hint}
+4. Only edit application code under {code_path} — do not touch vendor/third-party files.
+5. Do **not** commit secrets, tokens, or .env files.
+6. Run targeted tests if reasonable: `{test_cmd}` on affected areas.
+7. Stage and commit on the current branch with message:
    `fix(sentry): {issue_short_id} {issue_title[:72]}`
 
 ## Git context
