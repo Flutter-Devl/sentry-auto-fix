@@ -83,6 +83,11 @@ CLOSE_SOURCE_BRANCH="${CLOSE_SOURCE_BRANCH:-true}"
 BITBUCKET_PR_REVIEWERS="${BITBUCKET_PR_REVIEWERS:-}"
 BITBUCKET_AUTH="${BITBUCKET_AUTH:-bearer}"
 BITBUCKET_PR_ENABLED="${BITBUCKET_PR_ENABLED:-true}"
+REQUIRE_TESTS_TIER12="${REQUIRE_TESTS_TIER12:-true}"
+TEST_GATE_ENABLED="${TEST_GATE_ENABLED:-true}"
+FIX_CONFIDENCE_MIN="${FIX_CONFIDENCE_MIN:-medium}"
+TEST_TIMEOUT_SECONDS="${TEST_TIMEOUT_SECONDS:-600}"
+SYNC_PR_FEEDBACK_ON_RUN="${SYNC_PR_FEEDBACK_ON_RUN:-true}"
 
 # ---------------------------------------------------------------------------
 # Profile-namespaced paths — each profile gets its own state + log directory
@@ -418,6 +423,87 @@ PY
 }
 
 PR_BODY_FILE="${STATE_DIR}/pr-body.md"
+REJECTION_LESSONS_FILE="${STATE_DIR}/rejection-lessons.json"
+
+rejection_lessons_prompt_block() {
+  ensure_python_env
+  "$PYTHON_BIN" "${SCRIPT_DIR}/rejection_lessons.py" --state-dir "${STATE_DIR}" prompt 2>/dev/null || echo "(none recorded yet)"
+}
+
+sync_pr_feedback() {
+  if [[ -z "${BITBUCKET_ACCESS_TOKEN:-}" ]]; then
+    echo "BITBUCKET_ACCESS_TOKEN required to sync PR feedback"
+    return 1
+  fi
+  ensure_python_env
+  "$PYTHON_BIN" "${SCRIPT_DIR}/rejection_lessons.py" --state-dir "${STATE_DIR}" sync-bitbucket \
+    --workspace "${BITBUCKET_WORKSPACE}" \
+    --repo-slug "${BITBUCKET_REPO_SLUG}" \
+    --access-token "${BITBUCKET_ACCESS_TOKEN}" \
+    --auth "${BITBUCKET_AUTH}" \
+    --email "${BITBUCKET_EMAIL:-}"
+}
+
+record_rejection() {
+  local short_id="${1:-}"
+  local reason="${2:-}"
+  local branch="${3:-}"
+  local reviewer="${4:-}"
+
+  if [[ -z "$short_id" || -z "$reason" ]]; then
+    echo "Usage: $0 [profile] record-rejection <SHORT_ID> \"reason\" [branch] [reviewer]"
+    return 1
+  fi
+
+  ensure_python_env
+  "$PYTHON_BIN" "${SCRIPT_DIR}/rejection_lessons.py" --state-dir "${STATE_DIR}" record \
+    --issue-short-id "$short_id" \
+    --reason "$reason" \
+    --branch "$branch" \
+    --reviewer "$reviewer"
+}
+
+list_rejections() {
+  ensure_python_env
+  "$PYTHON_BIN" "${SCRIPT_DIR}/rejection_lessons.py" --state-dir "${STATE_DIR}" list
+}
+
+run_quality_gates() {
+  if last_run_no_action; then
+    log_line "quality-gates: skipped (NO_ACTION)"
+    return 0
+  fi
+
+  local branch
+  branch="$(parse_last_run_field "BRANCH_NAME")"
+  if [[ -z "$branch" ]]; then
+    log_line "quality-gates: skipped (no branch)"
+    return 0
+  fi
+
+  log_status "quality-gates: verifying tests and fix policy"
+  ensure_python_env
+  if "$PYTHON_BIN" "${SCRIPT_DIR}/quality_gates.py" \
+    --state-dir "${STATE_DIR}" \
+    --worktree "${WORKTREE_PATH}" \
+    --profile "${PROJECT_PROFILE}" \
+    --require-tests-tier12 "${REQUIRE_TESTS_TIER12}" \
+    --min-confidence "${FIX_CONFIDENCE_MIN}" \
+    --test-gate-enabled "${TEST_GATE_ENABLED}" \
+    --test-timeout "${TEST_TIMEOUT_SECONDS}" >> "$LOG_FILE" 2>&1; then
+    log_line "quality-gates: passed"
+    return 0
+  fi
+
+  log_line "quality-gates: FAILED — PR creation blocked"
+  log_status "quality-gates: FAILED (tests/confidence/policy)"
+  echo "QUALITY_GATE_FAILED=true" >> "${STATE_DIR}/run-result.env"
+  return 1
+}
+
+quality_gate_failed() {
+  [[ -f "${STATE_DIR}/run-result.env" ]] && grep -q '^QUALITY_GATE_FAILED=true$' "${STATE_DIR}/run-result.env" 2>/dev/null
+}
 
 build_sentry_issue_url() {
   local short_id="$1"
@@ -472,6 +558,15 @@ $(cat "$PR_BODY_FILE")"
 - **Link:** ${issue_url:-_(add from Sentry MCP)_}
 - **Summary:** _(not captured — see commit diff)_
 
+## Fix Strategy
+- **Root cause:** _(not captured)_
+- **Strategy:** _(not captured)_
+
+## Tests
+- **Added/updated:** _(not captured)_
+- **Command run:** _(not captured)_
+- **Result:** _(not captured)_
+
 ## Possible Solutions
 1. _(not captured)_
 2. _(not captured)_
@@ -506,6 +601,11 @@ maybe_create_pr_from_last_run() {
     log_line "PR skipped: BITBUCKET_PR_ENABLED=false"
     return 0
   }
+
+  if quality_gate_failed; then
+    log_line "PR skipped: quality gates failed (tests/confidence/policy)"
+    return 0
+  fi
 
   if last_run_no_action; then
     log_line "PR skipped: agent reported NO_ACTION"
@@ -648,6 +748,9 @@ print_summary() {
 
   if [[ -f "$result_file" ]] && grep -q '^NO_ACTION=true$' "$result_file" 2>/dev/null; then
     echo "  Result : NO_ACTION — no new actionable issue found"
+  elif quality_gate_failed; then
+    echo "  Result : QUALITY_GATE_FAILED — branch pushed but PR blocked (see log)"
+    [[ -n "$branch" ]] && echo "  Branch : ${branch}"
   elif [[ -n "$short_id" ]]; then
     echo "  Result : ✓ fix pushed"
     echo "  Issue  : ${short_id}${tier:+ (${tier})}"
@@ -679,20 +782,24 @@ show_status() {
 }
 
 run_once() {
-  local prompt fix_workspace="${WORKTREE_PATH}" effective_query code_hint pattern_hint
+  local prompt fix_workspace="${WORKTREE_PATH}" effective_query code_hint pattern_hint lessons_block test_cmd
   effective_query="$(read_sentry_effective_query)"
+  lessons_block="$(rejection_lessons_prompt_block)"
   case "${PROJECT_PROFILE}" in
     laravel|php|backend|be)
       code_hint="Match Laravel/PHP patterns (Eloquent, jobs, middleware, form requests, try/catch, null-safe operators)."
       pattern_hint="app/ and routes/"
+      test_cmd="php artisan test --filter=<RelevantTestClassOrMethod>"
       ;;
     flutter|mobile|dart)
       code_hint="Match Flutter/Dart patterns (Riverpod, async guards, mounted checks, existing SDK usage)."
       pattern_hint="lib/"
+      test_cmd="flutter test test/path/to/relevant_test.dart"
       ;;
     *)
       code_hint="Match existing project patterns and conventions in ${CODE_PATH}/."
       pattern_hint="${CODE_PATH}/"
+      test_cmd="run the project's standard test command for changed files"
       ;;
   esac
   read -r -d '' prompt <<PROMPT || true
@@ -733,6 +840,25 @@ Constraints:
 - PR reviewers: ${BITBUCKET_PR_REVIEWERS}
 - Pre-fetched candidates file (may be empty): ${STATE_DIR}/sentry-candidates.json
 
+## Lessons from rejected auto-fix PRs (MUST NOT repeat)
+${lessons_block}
+If your proposed fix matches any rejected pattern above, print NO_ACTION instead of pushing.
+
+Fix strategy — reproduce before fix (mandatory):
+1. From Sentry MCP, identify the user action / API call / state that triggers the error
+2. Locate the exact throw site in ${pattern_hint} (not vendor/native unless tier3)
+3. Search the repo for similar past fixes and match existing patterns
+4. Apply the smallest root-cause change at the source
+5. Add or update an automated test that would have caught this bug
+6. Run the test command and confirm it passes before pushing
+
+Fix strategy playbook:
+- null/type errors → guard or correct type at source (never swallow)
+- auth 401/403 → token refresh / session handling (never filter events)
+- routing/navigation → fix route guards / navigation logic
+- platform/vendor timeout (tier3 only) → timeout handler + fallback UX, or NO_ACTION
+- NEVER use beforeSend / Sentry filters for tier1 or tier2
+
 Fix quality — long-term, production-safe (NOT quick hacks):
 - Fix the ROOT CAUSE in application code so the error **stops happening** — not just stops appearing in Sentry
 - ${code_hint}
@@ -762,7 +888,7 @@ Procedure:
    - **tier3 (LAST — only when tier1 and tier2 are exhausted on current pages):** LaunchDarkly, App Hanging, ANR, pasteboard hangs, third-party SDK noise (Adjust/Iterable), native-only stacks
    If ${STATE_DIR}/sentry-candidates.json lists issues with "tier", pick the lowest tier number first.
    Do NOT pick tier3 (LaunchDarkly, App Hang, ANR, pasteboard, vendor filters) while any tier1 or tier2 issue remains unbranched and actionable in Sentry or in sentry-candidates.json.
-3) PHASE: fixing_code — read surrounding code + similar fixes in repo; implement a durable root-cause fix in ${fix_workspace}/${CODE_PATH}/; run targeted tests if relevant; verify you did not break adjacent behavior.
+3) PHASE: fixing_code — reproduce trigger → read surrounding code + similar fixes; implement durable root-cause fix in ${fix_workspace}/${CODE_PATH}/; add/update automated test(s); run tests and confirm pass.
 4) PHASE: committing — in ${fix_workspace}: commit: fix(sentry): <SHORT_ID> <title>
 5) PHASE: pushing — in ${fix_workspace}: push branch fix/sentry-<shortid-lower>-<slug> to origin
 6) PHASE: done — write PR body to:
@@ -787,6 +913,18 @@ Procedure:
    - **Why:** why this over the others (root cause, matches app patterns, lowest regression risk, long-term maintainable)
    - **Why not a quick fix:** one line on why hack/suppress-only options were rejected
 
+   ## Fix Strategy
+   - **Root cause:** what actually failed and why
+   - **Trigger:** user action / API call / state that reproduces it
+   - **Strategy:** null_guard | auth_refresh | routing | lifecycle | vendor_fallback | other
+   - **Files changed:** list main files under ${pattern_hint}
+
+   ## Tests
+   - **Added/updated:** path/to/test_file (required for tier1 and tier2)
+   - **Command run:** \`${test_cmd}\` (use the exact command you ran)
+   - **Result:** PASSED or FAILED (must be PASSED before pushing tier1/tier2)
+   - **What the test proves:** one line — which failure path is now covered
+
    ## After merge — resolve in Sentry
    1. Deploy / verify the fix on ${SENTRY_PROJECT_SLUG} (staging first)
    2. Confirm **new events stopped** in Sentry (not just filtered — check issue event graph)
@@ -798,7 +936,12 @@ Procedure:
    ISSUE_TIER=tier1|tier2|tier3
    ISSUE_URL=https://...   (Sentry issue permalink from MCP)
    BRANCH_NAME=...
+   FIX_CONFIDENCE=high|medium|low
+   FIX_STRATEGY=null_guard|auth_refresh|routing|lifecycle|vendor_fallback|other
+   TEST_COMMAND=<exact test command run>
+   TEST_RESULT=PASSED|FAILED
 If no suitable issue exists, print NO_ACTION and PHASE: done.
+If you cannot explain the trigger or add a passing test for tier1/tier2, print NO_ACTION.
 PROMPT
 
   "$CURSOR_BIN" agent \
@@ -823,6 +966,11 @@ run_once_locked() {
 
   log_status "starting run"
   preflight
+
+  if [[ "${SYNC_PR_FEEDBACK_ON_RUN}" == "true" && -n "${BITBUCKET_ACCESS_TOKEN:-}" ]]; then
+    log_line "feedback: syncing declined/rejected PR lessons from Bitbucket"
+    sync_pr_feedback >> "$LOG_FILE" 2>&1 || log_line "feedback: sync skipped or failed (non-fatal)"
+  fi
 
   save_user_git_state
   prepare_fix_worktree
@@ -861,6 +1009,7 @@ run_once_locked() {
   post_run_sentry_pagination
 
   if [[ "$agent_exit" -eq 0 ]]; then
+    run_quality_gates || true
     log_status "post-run: creating Bitbucket PR if needed"
     maybe_create_pr_from_last_run
   fi
@@ -1153,6 +1302,15 @@ case "$mode" in
     ensure_python_env
     resolve_sentry_issue "${2:-}" "${3:-}"
     ;;
+  record-rejection)
+    record_rejection "${2:-}" "${3:-}" "${4:-}" "${5:-}"
+    ;;
+  list-rejections)
+    list_rejections
+    ;;
+  sync-pr-feedback)
+    sync_pr_feedback
+    ;;
   install-auto)
     install_auto
     ;;
@@ -1185,6 +1343,9 @@ case "$mode" in
     echo "  create-pr [branch]  open draft PR manually"
     echo "  reset-pagination  clear Sentry page/exclusion state"
     echo "  resolve-issue <SHORT_ID>  mark issue resolved in Sentry (after deploy)"
+    echo "  record-rejection <SHORT_ID> \"reason\" [branch] [reviewer]"
+    echo "  list-rejections  show stored PR rejection lessons"
+    echo "  sync-pr-feedback  import declined/commented fix/sentry PRs from Bitbucket"
     echo "  install-auto   reinstall background service (per-profile LaunchAgent)"
     echo "  stop-auto      disable background auto-run"
     echo ""

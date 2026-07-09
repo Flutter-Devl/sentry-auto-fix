@@ -108,6 +108,12 @@ cursor agent login
 | `./run.sh [profile] unlock` | Clear a stuck run lock (if a previous run crashed) |
 | `./run.sh [profile] reset-pagination` | Reset Sentry page cursor and exclusion list |
 | `./run.sh [profile] resolve-issue <SHORT_ID>` | Mark a Sentry issue resolved after deploy |
+| `./run.sh [profile] record-rejection <SHORT_ID> "reason"` | Store PR rejection lesson for future runs |
+| `./run.sh [profile] list-rejections` | List stored rejection lessons |
+| `./run.sh [profile] sync-pr-feedback` | Import declined PR feedback from Bitbucket |
+| `./run.sh [profile] record-rejection <SHORT_ID> "reason"` | Store PR rejection lesson |
+| `./run.sh [profile] list-rejections` | List stored rejection lessons |
+| `./run.sh [profile] sync-pr-feedback` | Sync declined PR feedback from Bitbucket |
 
 ### Examples
 
@@ -289,3 +295,53 @@ sentry-auto-fix/
 | Bad fixes | Draft PRs only — requires human review and merge |
 | Concurrent runs | Lock file prevents two runs at the same time |
 | Crash recovery | Lock auto-released; run `./run.sh unlock` if stuck |
+| Quality gates | Tests must pass for tier1/tier2; low confidence blocks PR |
+| Rejection memory | Declined PR feedback stored and injected into future agent runs |
+
+---
+
+## Quality gates (post-agent, before PR)
+
+After the agent pushes a branch, `quality_gates.py` runs automatically:
+
+| Check | When | Action if failed |
+|---|---|---|
+| **FIX_CONFIDENCE** | Always | `low` blocks PR (config: `FIX_CONFIDENCE_MIN=medium`) |
+| **Automated tests** | tier1 / tier2 | Must run and pass (`REQUIRE_TESTS_TIER12=true`) |
+| **beforeSend ban** | tier1 / tier2 | Diff touching Sentry filters blocks PR |
+
+Config in `config.env`:
+
+```env
+REQUIRE_TESTS_TIER12=true
+TEST_GATE_ENABLED=true
+FIX_CONFIDENCE_MIN=medium
+TEST_TIMEOUT_SECONDS=600
+```
+
+Agent must write **Fix Strategy** and **Tests** sections in `pr-body.md` and print:
+
+```text
+FIX_CONFIDENCE=high|medium|low
+FIX_STRATEGY=null_guard|auth_refresh|routing|...
+TEST_COMMAND=flutter test test/foo_test.dart
+TEST_RESULT=PASSED
+```
+
+---
+
+## PR rejection feedback loop
+
+When reviewers decline or comment on auto-fix PRs, capture the lesson so the agent does not repeat it.
+
+| Command | Description |
+|---|---|
+| `./run.sh record-rejection ROBO-STAGING-F8 "beforeSend filter not acceptable"` | Manual entry |
+| `./run.sh list-rejections` | Show stored lessons |
+| `./run.sh sync-pr-feedback` | Import declined / commented `fix/sentry-*` PRs from Bitbucket |
+
+Lessons are stored in `.state/<profile>/rejection-lessons.json` and injected into every agent prompt.
+
+Auto-sync on each run: `SYNC_PR_FEEDBACK_ON_RUN=true` (default).
+
+---

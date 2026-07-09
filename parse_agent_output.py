@@ -8,7 +8,17 @@ import re
 import sys
 from pathlib import Path
 
-FIELDS = ("ISSUE_SHORT_ID", "ISSUE_TIER", "ISSUE_URL", "BRANCH_NAME", "SEARCHED_ISSUES")
+FIELDS = (
+    "ISSUE_SHORT_ID",
+    "ISSUE_TIER",
+    "ISSUE_URL",
+    "BRANCH_NAME",
+    "SEARCHED_ISSUES",
+    "FIX_CONFIDENCE",
+    "FIX_STRATEGY",
+    "TEST_COMMAND",
+    "TEST_RESULT",
+)
 
 
 def _field_pattern(field: str) -> re.Pattern[str]:

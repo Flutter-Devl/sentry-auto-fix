@@ -46,7 +46,7 @@ def build_fix_prompt(
 3. {pattern_hint}
 4. Only edit application code under {code_path} — do not touch vendor/third-party files.
 5. Do **not** commit secrets, tokens, or .env files.
-6. Run targeted tests if reasonable: `{test_cmd}` on affected areas.
+6. Run targeted tests — **required** for tier1/tier2; include command + PASSED in pr-body.md
 7. Stage and commit on the current branch with message:
    `fix(sentry): {issue_short_id} {issue_title[:72]}`
 
@@ -55,7 +55,8 @@ def build_fix_prompt(
 - Current branch: {branch_name}
 - Only commit if you made code changes.
 
-When done, reply with a short summary: files changed, root cause, and test commands run.
+When done, reply with a short summary: files changed, root cause, fix strategy, test command run, and TEST_RESULT=PASSED|FAILED.
+Also print: FIX_CONFIDENCE=high|medium|low, FIX_STRATEGY=..., TEST_COMMAND=..., TEST_RESULT=...
 """
 
 
