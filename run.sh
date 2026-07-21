@@ -88,6 +88,14 @@ TEST_GATE_ENABLED="${TEST_GATE_ENABLED:-true}"
 FIX_CONFIDENCE_MIN="${FIX_CONFIDENCE_MIN:-medium}"
 TEST_TIMEOUT_SECONDS="${TEST_TIMEOUT_SECONDS:-600}"
 SYNC_PR_FEEDBACK_ON_RUN="${SYNC_PR_FEEDBACK_ON_RUN:-true}"
+SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_URL:-}"
+SLACK_NOTIFY_ENABLED="${SLACK_NOTIFY_ENABLED:-true}"
+SLACK_NOTIFY_RUN_START="${SLACK_NOTIFY_RUN_START:-false}"
+CODEGUARDIAN_ENABLED="${CODEGUARDIAN_ENABLED:-false}"
+CODEGUARDIAN_CLI="${CODEGUARDIAN_CLI:-}"
+CODEGUARDIAN_MODE="${CODEGUARDIAN_MODE:-validate}"
+CODEGUARDIAN_TIMEOUT="${CODEGUARDIAN_TIMEOUT:-600}"
+CODEGUARDIAN_FAIL_BLOCKS_PR="${CODEGUARDIAN_FAIL_BLOCKS_PR:-true}"
 
 # ---------------------------------------------------------------------------
 # Profile-namespaced paths — each profile gets its own state + log directory
@@ -490,7 +498,12 @@ run_quality_gates() {
     --require-tests-tier12 "${REQUIRE_TESTS_TIER12}" \
     --min-confidence "${FIX_CONFIDENCE_MIN}" \
     --test-gate-enabled "${TEST_GATE_ENABLED}" \
-    --test-timeout "${TEST_TIMEOUT_SECONDS}" >> "$LOG_FILE" 2>&1; then
+    --test-timeout "${TEST_TIMEOUT_SECONDS}" \
+    --codeguardian-enabled "${CODEGUARDIAN_ENABLED}" \
+    --codeguardian-cli "${CODEGUARDIAN_CLI}" \
+    --codeguardian-mode "${CODEGUARDIAN_MODE}" \
+    --codeguardian-timeout "${CODEGUARDIAN_TIMEOUT}" \
+    --codeguardian-fail-blocks-pr "${CODEGUARDIAN_FAIL_BLOCKS_PR}" >> "$LOG_FILE" 2>&1; then
     log_line "quality-gates: passed"
     return 0
   fi
@@ -503,6 +516,63 @@ run_quality_gates() {
 
 quality_gate_failed() {
   [[ -f "${STATE_DIR}/run-result.env" ]] && grep -q '^QUALITY_GATE_FAILED=true$' "${STATE_DIR}/run-result.env" 2>/dev/null
+}
+
+slack_notify() {
+  local event="$1"
+  shift
+
+  [[ "${SLACK_NOTIFY_ENABLED}" == "true" ]] || return 0
+  [[ -n "${SLACK_WEBHOOK_URL:-}" ]] || return 0
+
+  ensure_python_env
+  "$PYTHON_BIN" "${SCRIPT_DIR}/slack_notify.py" run-outcome \
+    --webhook-url "${SLACK_WEBHOOK_URL}" \
+    --profile "${ACTIVE_PROFILE}" \
+    --event "$event" \
+    --repo-slug "${BITBUCKET_REPO_SLUG}" \
+    "$@" >> "$LOG_FILE" 2>&1 || log_line "slack: notify failed (non-fatal)"
+}
+
+slack_notify_run_outcome() {
+  local agent_exit="${1:-0}"
+  local short_id tier branch pr_url issue_url detail event=""
+
+  short_id="$(parse_last_run_field "ISSUE_SHORT_ID")"
+  tier="$(parse_last_run_field "ISSUE_TIER")"
+  branch="$(parse_last_run_field "BRANCH_NAME")"
+  pr_url="$(parse_last_run_field "PR_URL")"
+  issue_url="$(parse_last_run_field "ISSUE_URL")"
+
+  if [[ "$agent_exit" -ne 0 ]]; then
+    event="agent_failed"
+    detail="Cursor agent exited with code ${agent_exit}"
+  elif last_run_no_action; then
+    event="no_action"
+    detail="No tier1/tier2/tier3 candidate to fix this cycle"
+  elif quality_gate_failed; then
+    event="quality_gate_failed"
+    detail="Tests/confidence/policy check failed — branch may exist on origin"
+  elif [[ -n "$pr_url" ]]; then
+    event="pr_created"
+  elif [[ -n "$branch" ]]; then
+    event="branch_pushed"
+    if [[ "${BITBUCKET_PR_ENABLED}" != "true" ]]; then
+      detail="BITBUCKET_PR_ENABLED=false — open PR manually in Bitbucket"
+    else
+      detail="PR was not created — check run.log"
+    fi
+  else
+    return 0
+  fi
+
+  slack_notify "$event" \
+    ${short_id:+--issue-short-id "$short_id"} \
+    ${tier:+--issue-tier "$tier"} \
+    ${branch:+--branch "$branch"} \
+    ${pr_url:+--pr-url "$pr_url"} \
+    ${issue_url:+--issue-url "$issue_url"} \
+    ${detail:+--detail "$detail"}
 }
 
 build_sentry_issue_url() {
@@ -967,6 +1037,10 @@ run_once_locked() {
   log_status "starting run"
   preflight
 
+  if [[ "${SLACK_NOTIFY_RUN_START}" == "true" ]]; then
+    slack_notify "run_started" --detail "Polling Sentry and running Cursor agent"
+  fi
+
   if [[ "${SYNC_PR_FEEDBACK_ON_RUN}" == "true" && -n "${BITBUCKET_ACCESS_TOKEN:-}" ]]; then
     log_line "feedback: syncing declined/rejected PR lessons from Bitbucket"
     sync_pr_feedback >> "$LOG_FILE" 2>&1 || log_line "feedback: sync skipped or failed (non-fatal)"
@@ -1013,6 +1087,8 @@ run_once_locked() {
     log_status "post-run: creating Bitbucket PR if needed"
     maybe_create_pr_from_last_run
   fi
+
+  slack_notify_run_outcome "$agent_exit"
 
   print_summary
   cleanup_run_environment
@@ -1311,6 +1387,16 @@ case "$mode" in
   sync-pr-feedback)
     sync_pr_feedback
     ;;
+  test-slack)
+    ensure_python_env
+    if [[ -z "${SLACK_WEBHOOK_URL:-}" ]]; then
+      echo "Set SLACK_WEBHOOK_URL in config.env"
+      exit 1
+    fi
+    "$PYTHON_BIN" "${SCRIPT_DIR}/slack_notify.py" test \
+      --webhook-url "${SLACK_WEBHOOK_URL}" \
+      --profile "${ACTIVE_PROFILE}"
+    ;;
   install-auto)
     install_auto
     ;;
@@ -1346,6 +1432,7 @@ case "$mode" in
     echo "  record-rejection <SHORT_ID> \"reason\" [branch] [reviewer]"
     echo "  list-rejections  show stored PR rejection lessons"
     echo "  sync-pr-feedback  import declined/commented fix/sentry PRs from Bitbucket"
+    echo "  test-slack     send a test message to SLACK_WEBHOOK_URL"
     echo "  install-auto   reinstall background service (per-profile LaunchAgent)"
     echo "  stop-auto      disable background auto-run"
     echo ""

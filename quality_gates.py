@@ -113,6 +113,44 @@ def default_test_command(profile: str, pr_body_path: Path, worktree: Path) -> st
     return ""
 
 
+def run_codeguardian_gate(
+    *,
+    worktree: Path,
+    profile: str,
+    enabled: bool,
+    cli: str,
+    mode: str,
+    timeout: int,
+    fail_blocks_pr: bool,
+) -> int:
+    """Optional CodeGuardian validate after unit tests (Flutter only)."""
+    if not enabled:
+        print("quality-gates: CodeGuardian disabled")
+        return 0
+    if profile not in ("flutter", "mobile", "dart"):
+        print("quality-gates: CodeGuardian skipped (Flutter profile only)")
+        return 0
+    if not cli.strip():
+        print("quality-gates: CodeGuardian enabled but CODEGUARDIAN_CLI empty — skip")
+        return 0
+
+    from codeguardian_gate import run_codeguardian
+
+    print(f"quality-gates: running CodeGuardian ({mode})...")
+    ok, detail = run_codeguardian(
+        worktree=worktree, cli=cli, mode=mode, timeout=timeout
+    )
+    print(detail)
+    if ok:
+        print("quality-gates: CodeGuardian PASSED")
+        return 0
+    if fail_blocks_pr:
+        print("quality-gates: FAILED — CodeGuardian gate blocked PR")
+        return 1
+    print("quality-gates: CodeGuardian failed but CODEGUARDIAN_FAIL_BLOCKS_PR=false — continuing")
+    return 0
+
+
 def verify(
     *,
     state_dir: Path,
@@ -122,6 +160,11 @@ def verify(
     min_confidence: str,
     test_gate_enabled: bool,
     test_timeout: int,
+    codeguardian_enabled: bool = False,
+    codeguardian_cli: str = "",
+    codeguardian_mode: str = "validate",
+    codeguardian_timeout: int = 600,
+    codeguardian_fail_blocks_pr: bool = True,
 ) -> int:
     result_path = state_dir / "run-result.env"
     pr_body_path = state_dir / "pr-body.md"
@@ -158,12 +201,28 @@ def verify(
 
     if not test_gate_enabled:
         print("quality-gates: test gate disabled")
-        return 0
+        return run_codeguardian_gate(
+            worktree=worktree,
+            profile=profile,
+            enabled=codeguardian_enabled,
+            cli=codeguardian_cli,
+            mode=codeguardian_mode,
+            timeout=codeguardian_timeout,
+            fail_blocks_pr=codeguardian_fail_blocks_pr,
+        )
 
     require_tests = require_tests_tier12 and tier in ("tier1", "tier2")
     if not require_tests:
         print("quality-gates: tests not required for this tier")
-        return 0
+        return run_codeguardian_gate(
+            worktree=worktree,
+            profile=profile,
+            enabled=codeguardian_enabled,
+            cli=codeguardian_cli,
+            mode=codeguardian_mode,
+            timeout=codeguardian_timeout,
+            fail_blocks_pr=codeguardian_fail_blocks_pr,
+        )
 
     if not test_command:
         test_command, body_result = parse_pr_body_tests(pr_body_path)
@@ -179,17 +238,24 @@ def verify(
 
     if test_result == "PASSED":
         print(f"quality-gates: agent reported tests PASSED ({test_command})")
-        return 0
+    else:
+        print(f"quality-gates: running tests: {test_command}")
+        ok, tail = run_test_command(worktree, test_command, test_timeout)
+        print(tail)
+        if not ok:
+            print("quality-gates: FAILED — tests did not pass")
+            return 1
+        print("quality-gates: tests PASSED")
 
-    print(f"quality-gates: running tests: {test_command}")
-    ok, tail = run_test_command(worktree, test_command, test_timeout)
-    print(tail)
-    if ok:
-        print("quality-gates: PASSED")
-        return 0
-
-    print("quality-gates: FAILED — tests did not pass")
-    return 1
+    return run_codeguardian_gate(
+        worktree=worktree,
+        profile=profile,
+        enabled=codeguardian_enabled,
+        cli=codeguardian_cli,
+        mode=codeguardian_mode,
+        timeout=codeguardian_timeout,
+        fail_blocks_pr=codeguardian_fail_blocks_pr,
+    )
 
 
 def main() -> int:
@@ -201,6 +267,11 @@ def main() -> int:
     parser.add_argument("--min-confidence", default="medium")
     parser.add_argument("--test-gate-enabled", default="true")
     parser.add_argument("--test-timeout", type=int, default=600)
+    parser.add_argument("--codeguardian-enabled", default="false")
+    parser.add_argument("--codeguardian-cli", default="")
+    parser.add_argument("--codeguardian-mode", default="validate")
+    parser.add_argument("--codeguardian-timeout", type=int, default=600)
+    parser.add_argument("--codeguardian-fail-blocks-pr", default="true")
     args = parser.parse_args()
 
     return verify(
@@ -211,6 +282,12 @@ def main() -> int:
         min_confidence=args.min_confidence,
         test_gate_enabled=args.test_gate_enabled.lower() in ("1", "true", "yes"),
         test_timeout=args.test_timeout,
+        codeguardian_enabled=args.codeguardian_enabled.lower() in ("1", "true", "yes"),
+        codeguardian_cli=args.codeguardian_cli,
+        codeguardian_mode=args.codeguardian_mode,
+        codeguardian_timeout=args.codeguardian_timeout,
+        codeguardian_fail_blocks_pr=args.codeguardian_fail_blocks_pr.lower()
+        in ("1", "true", "yes"),
     )
 
 
