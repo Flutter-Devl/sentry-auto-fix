@@ -1,22 +1,37 @@
-# Slack status channel (Phase 2)
+# Slack status channel
 
-Incoming Webhook posts full run status to one Slack channel.
+Preferred setup: **Bot token + channel ID** (no Incoming Webhook).
 
-## Setup (one time)
+## 1. Create a Slack channel
 
-1. In Slack, open the channel → **Integrations** → **Incoming Webhooks** → Add  
-2. Copy the URL (`https://hooks.slack.com/services/...`)  
-3. In `config.env`:
+Example: `#abyan-sentry-autofix` in the Abyan / robo-advisory workspace.
+
+Open the channel → the URL looks like:
+
+`https://robo-advisorygroup.slack.com/archives/C0BGPF244H3`
+
+**Channel ID** = `C0BGPF244H3` (the `C…` part).
+
+## 2. Slack app (Bot) — once per workspace
+
+1. [https://api.slack.com/apps](https://api.slack.com/apps) → Create app → From scratch  
+2. **OAuth & Permissions** → Bot Token Scopes → add `chat:write`  
+   (optional: `chat:write.public` if the bot posts without joining)  
+3. **Install to Workspace** → copy **Bot User OAuth Token** (`xoxb-…`)  
+4. Invite the bot to the channel: `/invite @YourBotName`
+
+## 3. `config.env` (Abyan Capital machine)
 
 ```env
-SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T…/B…/…
+SLACK_BOT_TOKEN=xoxb-…
+SLACK_CHANNEL_ID=C0BGPF244H3
 SLACK_NOTIFY_ENABLED=true
 SLACK_NOTIFY_CODEGUARDIAN=true
 SLACK_NOTIFY_PR_MERGED=true
-SLACK_NOTIFY_RUN_START=false
+# SLACK_WEBHOOK_URL=   # leave empty when using bot+channel
 ```
 
-4. Test:
+## 4. Test
 
 ```bash
 ./run.sh flutter test-slack
@@ -24,24 +39,8 @@ SLACK_NOTIFY_RUN_START=false
 
 ## Events
 
-| Event | When |
-|--------|------|
-| `pr_created` | Draft Bitbucket PR opened |
-| `pr_merged` | Tracked autofix PR becomes `MERGED` (polled each cycle) |
-| `codeguardian_passed` | CodeGuardian validate passed on the fix worktree |
-| `codeguardian_failed` | CodeGuardian failed (blocks PR when configured) |
-| `quality_gate_failed` | Tests / confidence / beforeSend policy blocked PR |
-| `branch_pushed` | Branch on origin but no PR |
-| `agent_failed` | Cursor agent non-zero exit |
-| `no_action` | Nothing to fix this cycle |
-| `run_started` | Only if `SLACK_NOTIFY_RUN_START=true` |
+Same as before: PR created, PR merged (polled), CodeGuardian pass/fail, quality gate, agent failed, no_action.
 
-Each message includes profile, Sentry issue, branch, PR link, gate reason, and a detail block (CG/test output truncated for Slack limits).
+## Fallback
 
-## PR merged how it works
-
-1. When a draft PR is created, its id is stored in `.state/<profile>/tracked-prs.json`  
-2. Each `./run.sh … once` / daemon cycle calls Bitbucket for tracked PRs  
-3. Newly `MERGED` PRs post `pr_merged` once (who merged + commit when available)
-
-Latency ≈ your `POLL_SECONDS` (e.g. 15 minutes), not instant webhooks.
+If bot install is blocked, you can still set `SLACK_WEBHOOK_URL` instead. Bot + channel ID is preferred.

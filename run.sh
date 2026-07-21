@@ -89,6 +89,8 @@ FIX_CONFIDENCE_MIN="${FIX_CONFIDENCE_MIN:-medium}"
 TEST_TIMEOUT_SECONDS="${TEST_TIMEOUT_SECONDS:-600}"
 SYNC_PR_FEEDBACK_ON_RUN="${SYNC_PR_FEEDBACK_ON_RUN:-true}"
 SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_URL:-}"
+SLACK_BOT_TOKEN="${SLACK_BOT_TOKEN:-}"
+SLACK_CHANNEL_ID="${SLACK_CHANNEL_ID:-}"
 SLACK_NOTIFY_ENABLED="${SLACK_NOTIFY_ENABLED:-true}"
 SLACK_NOTIFY_RUN_START="${SLACK_NOTIFY_RUN_START:-false}"
 SLACK_NOTIFY_CODEGUARDIAN="${SLACK_NOTIFY_CODEGUARDIAN:-true}"
@@ -536,15 +538,24 @@ quality_gate_failed() {
   [[ -f "${STATE_DIR}/run-result.env" ]] && grep -q '^QUALITY_GATE_FAILED=true$' "${STATE_DIR}/run-result.env" 2>/dev/null
 }
 
+slack_is_configured() {
+  if [[ -n "${SLACK_BOT_TOKEN:-}" && -n "${SLACK_CHANNEL_ID:-}" ]]; then
+    return 0
+  fi
+  [[ -n "${SLACK_WEBHOOK_URL:-}" ]]
+}
+
 slack_notify() {
   local event="$1"
   shift
 
   [[ "${SLACK_NOTIFY_ENABLED}" == "true" ]] || return 0
-  [[ -n "${SLACK_WEBHOOK_URL:-}" ]] || return 0
+  slack_is_configured || return 0
 
   ensure_python_env
   "$PYTHON_BIN" "${SCRIPT_DIR}/slack_notify.py" run-outcome \
+    --bot-token "${SLACK_BOT_TOKEN}" \
+    --channel-id "${SLACK_CHANNEL_ID}" \
     --webhook-url "${SLACK_WEBHOOK_URL}" \
     --profile "${ACTIVE_PROFILE}" \
     --event "$event" \
@@ -585,7 +596,7 @@ track_created_pr() {
 poll_merged_prs() {
   [[ "${SLACK_NOTIFY_ENABLED}" == "true" ]] || return 0
   [[ "${SLACK_NOTIFY_PR_MERGED}" == "true" ]] || return 0
-  [[ -n "${SLACK_WEBHOOK_URL:-}" ]] || return 0
+  slack_is_configured || return 0
   [[ -n "${BITBUCKET_ACCESS_TOKEN:-}" ]] || return 0
 
   ensure_python_env
@@ -595,6 +606,8 @@ poll_merged_prs() {
     --access-token "${BITBUCKET_ACCESS_TOKEN}" \
     --auth "${BITBUCKET_AUTH}" \
     --email "${BITBUCKET_EMAIL:-}" \
+    --bot-token "${SLACK_BOT_TOKEN}" \
+    --channel-id "${SLACK_CHANNEL_ID}" \
     --webhook-url "${SLACK_WEBHOOK_URL}" \
     --profile "${ACTIVE_PROFILE}" >> "$LOG_FILE" 2>&1 || log_line "pr-tracker: poll-merged failed (non-fatal)"
 }
@@ -1503,11 +1516,13 @@ case "$mode" in
     ;;
   test-slack)
     ensure_python_env
-    if [[ -z "${SLACK_WEBHOOK_URL:-}" ]]; then
-      echo "Set SLACK_WEBHOOK_URL in config.env"
+    if ! slack_is_configured; then
+      echo "Set SLACK_BOT_TOKEN + SLACK_CHANNEL_ID (preferred) or SLACK_WEBHOOK_URL"
       exit 1
     fi
     "$PYTHON_BIN" "${SCRIPT_DIR}/slack_notify.py" test \
+      --bot-token "${SLACK_BOT_TOKEN}" \
+      --channel-id "${SLACK_CHANNEL_ID}" \
       --webhook-url "${SLACK_WEBHOOK_URL}" \
       --profile "${ACTIVE_PROFILE}"
     ;;
@@ -1546,7 +1561,7 @@ case "$mode" in
     echo "  record-rejection <SHORT_ID> \"reason\" [branch] [reviewer]"
     echo "  list-rejections  show stored PR rejection lessons"
     echo "  sync-pr-feedback  import declined/commented fix/sentry PRs from Bitbucket"
-    echo "  test-slack     send a test message to SLACK_WEBHOOK_URL"
+    echo "  test-slack     send a test message (bot+channel or webhook)"
     echo "  install-auto   reinstall background service (per-profile LaunchAgent)"
     echo "  stop-auto      disable background auto-run"
     echo ""

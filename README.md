@@ -359,30 +359,25 @@ Auto-sync on each run: `SYNC_PR_FEEDBACK_ON_RUN=true` (default).
 
 ## Slack notifications (status channel)
 
-Post full run status to one Slack channel via **Incoming Webhook**.  
-See `docs/SLACK_STATUS.md`.
-
-1. Slack channel → **Integrations** → **Incoming Webhooks** → copy URL  
-2. In `config.env`:
+Preferred: **Bot token + channel ID** (no Incoming Webhook). See `docs/SLACK_STATUS.md`.
 
 ```env
-SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+SLACK_BOT_TOKEN=xoxb-…
+SLACK_CHANNEL_ID=C0BGPF244H3          # from channel URL …/archives/C…
 SLACK_NOTIFY_ENABLED=true
 SLACK_NOTIFY_CODEGUARDIAN=true
 SLACK_NOTIFY_PR_MERGED=true
-SLACK_NOTIFY_RUN_START=false   # noisy if true
 ```
 
-3. Test: `./run.sh flutter test-slack`
+Invite the bot to the channel, then: `./run.sh flutter test-slack`
 
 | Event | Slack |
 |-------|-------|
 | Draft PR created | 📋 PR link + issue/branch |
 | PR merged | ✅ polled from Bitbucket each cycle |
-| CodeGuardian passed | 🛡️ validate OK + detail |
-| CodeGuardian failed | 🛑 blocked PR + findings |
-| Quality gate failed | 🚫 tests/confidence/policy |
-| Branch pushed, no PR | 📤 |
-| NO_ACTION / agent failed | ⏭️ / ⚠️ |
+| CodeGuardian passed / failed | 🛡️ / 🛑 + detail |
+| Quality gate / agent / no_action | 🚫 / ⚠️ / ⏭️ |
+
+Optional fallback: `SLACK_WEBHOOK_URL` if bot token is not available.
 
 ---
