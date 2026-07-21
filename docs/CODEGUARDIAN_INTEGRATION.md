@@ -136,10 +136,12 @@ On schedule / LaunchAgent (unchanged):
 ## Implementation checklist on this branch
 
 - [x] Design doc (`docs/CODEGUARDIAN_INTEGRATION.md`)
-- [ ] Config keys in `config.example.env`
-- [ ] `quality_gates.py` hook: optional CodeGuardian `validate` after tests
-- [ ] `run.sh`: pass `CODEGUARDIAN_*` env into gates; Slack note when CG fails
-- [ ] README section: Prevent + Remediate flow
+- [x] Config keys in `config.example.env` (points at `dev/v1.0` root CLI — not nested scaffold)
+- [x] `quality_gates.py` hook: optional CodeGuardian `validate` after tests
+- [x] `run.sh`: pass `CODEGUARDIAN_*` env into quality gates
+- [x] `codeguardian_gate.py` + `test_codeguardian_gate.py`
+- [x] Combined flow guide (`docs/COMBINED_FLOW.md`)
+- [ ] Optional: Slack note when CG fails
 - [ ] Optional: `ci_templates/bitbucket-codeguardian.yml` example for app repo
 
 ---
@@ -162,15 +164,18 @@ On schedule / LaunchAgent (unchanged):
 ## Quick start (after hooks land)
 
 ```bash
-# Terminal A — install CodeGuardian once
+# Terminal A — install CodeGuardian once (branch with real CLI)
 git clone https://github.com/suleman1994/codeGuardianAIFlutter.git
-cd codeGuardianAIFlutter && melos bootstrap
+cd codeGuardianAIFlutter
+git checkout origin/dev/v1.0 -B dev/v1.0
+melos bootstrap
+./run-codeguardian.sh validate -p /path/to/abyan-app-flutter   # must emit JSON findings
 
 # Terminal B — sentry-auto-fix
 cd /Users/mehsarairfan/sentry-auto-fix
 # config.env:
 #   CODEGUARDIAN_ENABLED=true
-#   CODEGUARDIAN_CLI=dart run /path/to/.../codeguardian.dart
+#   CODEGUARDIAN_CLI=/absolute/path/to/codeGuardianAIFlutter/run-codeguardian.sh
 ./run.sh flutter once
 ```
 

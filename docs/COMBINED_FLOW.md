@@ -60,8 +60,9 @@ Replacing one with the other leaves a gap. Combining them covers **prevent → d
 
 - Did **not** copy CodeGuardian Dart packages into sentry-auto-fix  
 - Did **not** replace Cursor Agent with CodeGuardian’s deterministic fixer  
-- Did **not** enable the hook by default (opt-in until CLI path is configured)  
 - Did **not** change Abyan Flutter app structure for this (CI gate in app repo is a follow-up)
+
+**Important:** CodeGuardian’s functional CLI lives on branch **`dev/v1.0`** (root `packages/`). The nested `CodeGuardian Al Flutter/` tree on `main` is a scaffold that prints and exits 0 — do not wire that path.
 
 ---
 
@@ -81,8 +82,8 @@ Branch: **`feature/codeguardian-integration`**
 ### Config keys (opt-in)
 
 ```env
-CODEGUARDIAN_ENABLED=false          # set true when CLI is installed
-CODEGUARDIAN_CLI=""                 # e.g. dart run /path/to/.../codeguardian.dart
+CODEGUARDIAN_ENABLED=true           # enable after CLI on dev/v1.0 is bootstrapped
+CODEGUARDIAN_CLI=/path/to/codeGuardianAIFlutter/run-codeguardian.sh
 CODEGUARDIAN_MODE=validate          # analyze | validate
 CODEGUARDIAN_TIMEOUT=600
 CODEGUARDIAN_FAIL_BLOCKS_PR=true    # fail → no draft PR
@@ -182,26 +183,34 @@ Lessons injected into next agent run
 cd /Users/mehsarairfan/sentry-auto-fix
 git checkout feature/codeguardian-integration
 
-# Normal auto-fix (CodeGuardian off until configured)
 ./run.sh flutter once
 ./run.sh flutter status
 
-# After installing CodeGuardian locally — enable in config.env:
-# CODEGUARDIAN_ENABLED=true
-# CODEGUARDIAN_CLI=dart run /path/to/.../codeguardian.dart
-./run.sh flutter once
+# Smoke-test CodeGuardian alone (must print JSON findings, not a stub):
+python3 codeguardian_gate.py --worktree /path/to/abyan-app-flutter
+python3 -m unittest test_codeguardian_gate.py
 ```
 
-Install CodeGuardian (once):
+Install CodeGuardian (once) — **use `dev/v1.0`**:
 
 ```bash
 git clone https://github.com/suleman1994/codeGuardianAIFlutter.git
 cd codeGuardianAIFlutter
+git checkout origin/dev/v1.0 -B dev/v1.0
 dart pub global activate melos
 melos bootstrap
+chmod +x run-codeguardian.sh   # if present; or create wrapper to packages/.../codeguardian.dart
+
+# Verify real analysis (exit 0/1/2 + JSON — not a scaffold print):
+./run-codeguardian.sh validate -p /path/to/abyan-app-flutter
 ```
 
-Then set `CODEGUARDIAN_CLI` to the `dart run …/codeguardian.dart` path for your machine.
+Then in `config.env`:
+
+```env
+CODEGUARDIAN_ENABLED=true
+CODEGUARDIAN_CLI=/absolute/path/to/codeGuardianAIFlutter/run-codeguardian.sh
+```
 
 ---
 
@@ -214,7 +223,8 @@ Then set `CODEGUARDIAN_CLI` to the `dart run …/codeguardian.dart` path for you
 | Unit tests before PR | Yes (tier1/2) | Yes + optional CodeGuardian |
 | Single merged mega-repo | N/A | Still two repos |
 | Laravel | Auto-fix only | Same (no CodeGuardian) |
-| Default config | — | CodeGuardian **off** until CLI set |
+| Default config template | — | Off in `config.example.env`; enable locally after `dev/v1.0` bootstrap |
+| CodeGuardian CLI | Scaffold risk on CG `main` | Wired to real `dev/v1.0` `validate` / `analyze` |
 
 ---
 
@@ -233,7 +243,7 @@ Then set `CODEGUARDIAN_CLI` to the `dart run …/codeguardian.dart` path for you
 
 | Phase | Work |
 |-------|------|
-| **Now** | Merge `feature/codeguardian-integration`; enable CodeGuardian when CLI is ready |
+| **Now** | Merge `feature/codeguardian-integration`; keep CodeGuardian on `dev/v1.0` until their `main` ships the real CLI |
 | **Next** | Add CodeGuardian `validate` to Abyan Flutter Bitbucket CI on every PR |
 | **Later** | Slack message when CodeGuardian fails; map recurring Sentry issues → new CodeGuardian rules |
 | **Later** | Linux/CI runner (reduce Mac dependency) |
