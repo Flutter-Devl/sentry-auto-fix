@@ -1,46 +1,56 @@
 # Slack status channel
 
-Preferred setup: **Bot token + channel ID** (no Incoming Webhook).
+Posts PR / CodeGuardian / gate status to a Slack channel.
 
-## 1. Create a Slack channel
+**Preferred:** Slack Bot (`chat.postMessage`) — same pattern as Agile Assistant.  
+**Fallback:** Incoming Webhook URL.
 
-Example: `#abyan-sentry-autofix` in the Abyan / robo-advisory workspace.
+## Setup — Slack Bot (recommended)
 
-Open the channel → the URL looks like:
+1. Go to [https://api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From scratch**.
+2. Name it (e.g. `Sentry Auto-Fix`) and pick workspace `robo-advisorygroup`.
+3. **OAuth & Permissions** → Bot Token Scopes → add:
+   - `chat:write` (required)
+   - `channels:read` (optional, helpful)
+   - `reactions:read` only if you need reactions later
+4. **Install to Workspace** → Approve.
+5. Copy **Bot User OAuth Token** (`xoxb-...`) → `SLACK_BOT_TOKEN`.
+6. Open your status channel (or create one). Copy link; ID is the last segment starting with `C`  
+   (example: `https://robo-advisorygroup.slack.com/archives/C0BGPF244H3` → `C0BGPF244H3`).
+7. Set `SLACK_CHANNEL_ID=C0BGPF244H3` (or `SLACK_REVIEW_CHANNEL_ID` — both work).
+8. In the channel: `/invite @Sentry Auto-Fix` (your app name).
 
-`https://robo-advisorygroup.slack.com/archives/C0BGPF244H3`
-
-**Channel ID** = `C0BGPF244H3` (the `C…` part).
-
-## 2. Slack app (Bot) — once per workspace
-
-1. [https://api.slack.com/apps](https://api.slack.com/apps) → Create app → From scratch  
-2. **OAuth & Permissions** → Bot Token Scopes → add `chat:write`  
-   (optional: `chat:write.public` if the bot posts without joining)  
-3. **Install to Workspace** → copy **Bot User OAuth Token** (`xoxb-…`)  
-4. Invite the bot to the channel: `/invite @YourBotName`
-
-## 3. `config.env` (Abyan Capital machine)
+`SLACK_SIGNING_SECRET` is **not required** for status posts (only for inbound slash commands / interactivity).
 
 ```env
-SLACK_BOT_TOKEN=xoxb-…
+SLACK_BOT_TOKEN=xoxb-...
 SLACK_CHANNEL_ID=C0BGPF244H3
 SLACK_NOTIFY_ENABLED=true
 SLACK_NOTIFY_CODEGUARDIAN=true
 SLACK_NOTIFY_PR_MERGED=true
-# SLACK_WEBHOOK_URL=   # leave empty when using bot+channel
 ```
 
-## 4. Test
+Test:
 
 ```bash
 ./run.sh flutter test-slack
 ```
 
+## Setup — Incoming Webhook (optional fallback)
+
+If your workspace allows Incoming Webhooks, you can set `SLACK_WEBHOOK_URL` instead.  
+Bot token takes priority when both are set.
+
 ## Events
 
-Same as before: PR created, PR merged (polled), CodeGuardian pass/fail, quality gate, agent failed, no_action.
+| Event | When |
+|--------|------|
+| `pr_created` | Draft Bitbucket PR opened |
+| `pr_merged` | Tracked autofix PR becomes `MERGED` (polled each cycle) |
+| `codeguardian_passed` / `codeguardian_failed` | CG validate on fix worktree |
+| `quality_gate_failed` | Tests / confidence / policy |
+| `branch_pushed` / `agent_failed` / `no_action` | As labeled |
 
-## Fallback
+## PR merged
 
-If bot install is blocked, you can still set `SLACK_WEBHOOK_URL` instead. Bot + channel ID is preferred.
+Tracked in `.state/<profile>/tracked-prs.json` and polled each cycle (~`POLL_SECONDS`).

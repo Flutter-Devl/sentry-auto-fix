@@ -13,7 +13,7 @@ from typing import Any
 
 import requests
 
-from slack_notify import notify_run_outcome, slack_configured
+from slack_notify import notify_run_outcome
 
 
 def _now() -> str:
@@ -136,9 +136,6 @@ def poll_merged(
 
     session = _session(access_token, auth, email)
     notified = 0
-    can_slack = slack_configured(
-        bot_token=bot_token, channel_id=channel_id, webhook_url=webhook_url
-    )
 
     for row in prs:
         if row.get("merged_notified"):
@@ -191,27 +188,26 @@ def poll_merged(
         ]
         detail = " | ".join(p for p in detail_parts if p)
 
-        if notify and can_slack:
-            try:
-                notify_run_outcome(
-                    profile=profile,
-                    event="pr_merged",
-                    issue_short_id=row.get("issue_short_id", ""),
-                    issue_tier=row.get("issue_tier", ""),
-                    branch=branch,
-                    pr_url=pr_url,
-                    issue_url=row.get("issue_url", ""),
-                    repo_slug=repo_slug,
-                    detail=detail,
-                    title=title,
-                    bot_token=bot_token,
-                    channel_id=channel_id,
-                    webhook_url=webhook_url,
-                )
-                print(f"pr-tracker: Slack notified MERGED PR #{pr_id}")
-            except RuntimeError as exc:
-                print(f"pr-tracker: Slack failed for PR #{pr_id}: {exc}")
-                continue
+        can_notify = notify and (
+            (bot_token and channel_id) or webhook_url
+        )
+        if can_notify:
+            notify_run_outcome(
+                profile=profile,
+                event="pr_merged",
+                issue_short_id=row.get("issue_short_id", ""),
+                issue_tier=row.get("issue_tier", ""),
+                branch=branch,
+                pr_url=pr_url,
+                issue_url=row.get("issue_url", ""),
+                repo_slug=repo_slug,
+                detail=detail,
+                title=title,
+                webhook_url=webhook_url,
+                bot_token=bot_token,
+                channel_id=channel_id,
+            )
+            print(f"pr-tracker: Slack notified MERGED PR #{pr_id}")
         else:
             print(f"pr-tracker: MERGED PR #{pr_id} (Slack skipped)")
 
@@ -247,7 +243,13 @@ def main() -> int:
     poll.add_argument("--email", default="")
     poll.add_argument("--webhook-url", default=os.environ.get("SLACK_WEBHOOK_URL", ""))
     poll.add_argument("--bot-token", default=os.environ.get("SLACK_BOT_TOKEN", ""))
-    poll.add_argument("--channel-id", default=os.environ.get("SLACK_CHANNEL_ID", ""))
+    poll.add_argument(
+        "--channel-id",
+        default=os.environ.get(
+            "SLACK_CHANNEL_ID",
+            os.environ.get("SLACK_REVIEW_CHANNEL_ID", ""),
+        ),
+    )
     poll.add_argument("--profile", default="flutter")
     poll.add_argument("--no-notify", action="store_true")
 

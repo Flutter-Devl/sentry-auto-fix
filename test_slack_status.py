@@ -99,7 +99,8 @@ class PrTrackerTests(unittest.TestCase):
                     workspace="ws",
                     repo_slug="repo",
                     access_token="token",
-                    webhook_url="https://hooks.slack.com/services/x",
+                    bot_token="xoxb-test",
+                    channel_id="C123",
                     profile="flutter",
                 )
                 self.assertEqual(n, 1)
@@ -111,7 +112,8 @@ class PrTrackerTests(unittest.TestCase):
                     workspace="ws",
                     repo_slug="repo",
                     access_token="token",
-                    webhook_url="https://hooks.slack.com/services/x",
+                    bot_token="xoxb-test",
+                    channel_id="C123",
                     profile="flutter",
                 )
                 self.assertEqual(n2, 0)

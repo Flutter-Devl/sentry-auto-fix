@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Post sentry-auto-fix run outcomes to Slack.
-
-Preferred: Bot token + channel ID (chat.postMessage) — no Incoming Webhook.
-Fallback: Incoming Webhook URL.
-"""
+"""Post sentry-auto-fix run outcomes to Slack (Bot Token or Incoming Webhook)."""
 
 from __future__ import annotations
 
@@ -17,7 +13,6 @@ from typing import Any
 
 # Slack section text hard limit is ~3000; keep headroom for markup.
 _MAX_DETAIL_CHARS = 2500
-_CHAT_POST_URL = "https://slack.com/api/chat.postMessage"
 
 
 def send_slack_webhook(
@@ -52,9 +47,9 @@ def send_slack_bot(
     text: str,
     blocks: list[dict[str, Any]] | None = None,
 ) -> None:
-    """Post via Slack Web API chat.postMessage (channel ID like C0BGPF244H3)."""
+    """Post via chat.postMessage (Bot User OAuth Token xoxb-...)."""
     payload: dict[str, Any] = {
-        "channel": channel_id.strip(),
+        "channel": channel_id,
         "text": text,
     }
     if blocks:
@@ -62,11 +57,11 @@ def send_slack_bot(
 
     data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
-        _CHAT_POST_URL,
+        "https://slack.com/api/chat.postMessage",
         data=data,
         headers={
             "Content-Type": "application/json; charset=utf-8",
-            "Authorization": f"Bearer {bot_token.strip()}",
+            "Authorization": f"Bearer {bot_token}",
         },
         method="POST",
     )
@@ -74,13 +69,10 @@ def send_slack_bot(
         with urllib.request.urlopen(request, timeout=30) as response:
             body = json.loads(response.read().decode("utf-8"))
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"Slack API failed: {exc}") from exc
+        raise RuntimeError(f"Slack bot API failed: {exc}") from exc
 
     if not body.get("ok"):
-        raise RuntimeError(
-            f"Slack API error: {body.get('error', 'unknown')} "
-            f"(invite the bot to the channel if channel_not_found / not_in_channel)"
-        )
+        raise RuntimeError(f"Slack bot API error: {body.get('error', body)}")
 
 
 def send_slack(
@@ -91,28 +83,33 @@ def send_slack(
     channel_id: str = "",
     webhook_url: str = "",
 ) -> None:
-    """Prefer bot+channel; else webhook."""
-    if bot_token.strip() and channel_id.strip():
+    """Prefer Bot Token + channel ID; fall back to Incoming Webhook."""
+    bot_token = (bot_token or "").strip()
+    channel_id = (channel_id or "").strip()
+    webhook_url = (webhook_url or "").strip()
+
+    if bot_token and channel_id:
         send_slack_bot(bot_token, channel_id, text=text, blocks=blocks)
         return
-    if webhook_url.strip():
+    if webhook_url:
         send_slack_webhook(webhook_url, text=text, blocks=blocks)
         return
     raise RuntimeError(
         "Slack not configured: set SLACK_BOT_TOKEN + SLACK_CHANNEL_ID "
-        "(preferred) or SLACK_WEBHOOK_URL"
+        "(recommended) or SLACK_WEBHOOK_URL"
     )
 
 
-def slack_configured(
+def slack_is_configured(
     *,
     bot_token: str = "",
     channel_id: str = "",
     webhook_url: str = "",
 ) -> bool:
-    if bot_token.strip() and channel_id.strip():
-        return True
-    return bool(webhook_url.strip())
+    bot_token = (bot_token or "").strip()
+    channel_id = (channel_id or "").strip()
+    webhook_url = (webhook_url or "").strip()
+    return bool((bot_token and channel_id) or webhook_url)
 
 
 def _mrkdwn_section(text: str) -> dict[str, Any]:
@@ -202,9 +199,9 @@ def notify_run_outcome(
     title: str = "",
     gate_reason: str = "",
     cg_status: str = "",
+    webhook_url: str = "",
     bot_token: str = "",
     channel_id: str = "",
-    webhook_url: str = "",
 ) -> None:
     text, blocks = build_run_outcome_message(
         profile=profile,
@@ -223,17 +220,22 @@ def notify_run_outcome(
     send_slack(
         text=text,
         blocks=blocks,
-        bot_token=bot_token or os.environ.get("SLACK_BOT_TOKEN", ""),
-        channel_id=channel_id or os.environ.get("SLACK_CHANNEL_ID", ""),
-        webhook_url=webhook_url or os.environ.get("SLACK_WEBHOOK_URL", ""),
+        bot_token=bot_token,
+        channel_id=channel_id,
+        webhook_url=webhook_url,
     )
 
 
-def _add_common_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--bot-token", default=os.environ.get("SLACK_BOT_TOKEN", ""))
-    parser.add_argument("--channel-id", default=os.environ.get("SLACK_CHANNEL_ID", ""))
+def _add_common_dest_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--webhook-url", default=os.environ.get("SLACK_WEBHOOK_URL", ""))
-    parser.add_argument("--profile", default="flutter")
+    parser.add_argument("--bot-token", default=os.environ.get("SLACK_BOT_TOKEN", ""))
+    parser.add_argument(
+        "--channel-id",
+        default=os.environ.get(
+            "SLACK_CHANNEL_ID",
+            os.environ.get("SLACK_REVIEW_CHANNEL_ID", ""),
+        ),
+    )
 
 
 def main() -> int:
@@ -241,7 +243,8 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     run = sub.add_parser("run-outcome")
-    _add_common_args(run)
+    _add_common_dest_args(run)
+    run.add_argument("--profile", default="flutter")
     run.add_argument("--event", required=True)
     run.add_argument("--issue-short-id", default="")
     run.add_argument("--issue-tier", default="")
@@ -255,30 +258,34 @@ def main() -> int:
     run.add_argument("--cg-status", default="")
 
     test = sub.add_parser("test")
-    _add_common_args(test)
+    _add_common_dest_args(test)
+    test.add_argument("--profile", default="flutter")
 
     args = parser.parse_args()
-    bot = (args.bot_token or "").strip()
-    channel = (args.channel_id or "").strip()
+    bot_token = (args.bot_token or "").strip()
+    channel_id = (args.channel_id or "").strip()
     webhook = (args.webhook_url or "").strip()
 
-    if not slack_configured(bot_token=bot, channel_id=channel, webhook_url=webhook):
+    if not slack_is_configured(
+        bot_token=bot_token, channel_id=channel_id, webhook_url=webhook
+    ):
         print(
-            "Set SLACK_BOT_TOKEN + SLACK_CHANNEL_ID (preferred) or SLACK_WEBHOOK_URL",
+            "Slack not configured. Set SLACK_BOT_TOKEN + SLACK_CHANNEL_ID "
+            "(recommended) or SLACK_WEBHOOK_URL",
             file=sys.stderr,
         )
         return 1
 
     if args.command == "test":
-        mode = "bot+channel" if bot and channel else "webhook"
         notify_run_outcome(
             profile=args.profile,
             event="run_started",
-            detail=f"Slack test from sentry-auto-fix ({mode})",
-            bot_token=bot,
-            channel_id=channel,
+            detail="Slack bot/webhook test from sentry-auto-fix",
             webhook_url=webhook,
+            bot_token=bot_token,
+            channel_id=channel_id,
         )
+        mode = "bot" if bot_token and channel_id else "webhook"
         print(f"Slack test message sent ({mode})")
         return 0
 
@@ -295,9 +302,9 @@ def main() -> int:
         title=args.title,
         gate_reason=args.gate_reason,
         cg_status=args.cg_status,
-        bot_token=bot,
-        channel_id=channel,
         webhook_url=webhook,
+        bot_token=bot_token,
+        channel_id=channel_id,
     )
     print(f"Slack notified: {args.event}")
     return 0
