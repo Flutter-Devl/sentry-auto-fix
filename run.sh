@@ -91,11 +91,17 @@ SYNC_PR_FEEDBACK_ON_RUN="${SYNC_PR_FEEDBACK_ON_RUN:-true}"
 SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_URL:-}"
 SLACK_NOTIFY_ENABLED="${SLACK_NOTIFY_ENABLED:-true}"
 SLACK_NOTIFY_RUN_START="${SLACK_NOTIFY_RUN_START:-false}"
-CODEGUARDIAN_ENABLED="${CODEGUARDIAN_ENABLED:-false}"
+# Vendored CodeGuardian defaults (one repo — no second clone). Override in config.env.
+_CG_VENDOR_CLI="${SCRIPT_DIR}/vendor/codeguardian/bin/codeguardian.sh"
+CODEGUARDIAN_ENABLED="${CODEGUARDIAN_ENABLED:-true}"
 CODEGUARDIAN_CLI="${CODEGUARDIAN_CLI:-}"
+if [[ -z "${CODEGUARDIAN_CLI}" && -x "${_CG_VENDOR_CLI}" ]]; then
+  CODEGUARDIAN_CLI="${_CG_VENDOR_CLI}"
+fi
 CODEGUARDIAN_MODE="${CODEGUARDIAN_MODE:-validate}"
 CODEGUARDIAN_TIMEOUT="${CODEGUARDIAN_TIMEOUT:-600}"
 CODEGUARDIAN_FAIL_BLOCKS_PR="${CODEGUARDIAN_FAIL_BLOCKS_PR:-true}"
+unset _CG_VENDOR_CLI
 
 # ---------------------------------------------------------------------------
 # Profile-namespaced paths — each profile gets its own state + log directory

@@ -42,21 +42,32 @@ Each profile has its own:
 
 ## Quick start
 
+**Branch:** `feature/combined-sentry-codeguardian` — Sentry Auto-Fix + vendored CodeGuardian in **one clone**.
+
 ```bash
-cd /Users/mac/Documents/sentry-auto-fix
+git clone https://github.com/Flutter-Devl/sentry-auto-fix.git
+cd sentry-auto-fix
+git checkout feature/combined-sentry-codeguardian
 
-# One-time: authenticate Cursor agent
+# One-time deps (Python venv + CodeGuardian Melos). Does NOT install LaunchAgent.
+./setup.sh
+
+# Edit secrets / REPO_ROOT
+$EDITOR config.env
+
+# Authenticate Cursor (once)
 cursor agent login
-# OR set CURSOR_API_KEY in config.env (already done for this machine)
+# OR set CURSOR_API_KEY in config.env
 
-# Run one fix cycle — Laravel
+# Optional: background auto-run (LaunchAgent)
+./run.sh flutter install-auto
+
+# Run one fix cycle
+./run.sh flutter once
 ./run.sh laravel once
 
-# Run one fix cycle — Flutter
-./run.sh flutter once
-
 # Check run result
-./run.sh laravel status
+./run.sh flutter status
 ```
 
 ---

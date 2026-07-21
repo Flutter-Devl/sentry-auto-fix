@@ -3,3 +3,10 @@ config.env
 logs/
 .venv/
 .idea/
+__pycache__/
+*.pyc
+vendor/codeguardian/**/.dart_tool/
+vendor/codeguardian/**/build/
+vendor/codeguardian/**/pubspec_overrides.yaml
+vendor/codeguardian/**/*.iml
+vendor/codeguardian/.dart_tool/

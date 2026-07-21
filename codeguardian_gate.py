@@ -30,6 +30,11 @@ def run_codeguardian(
 
     # Split so "dart run path/to/bin.dart" works
     parts = shlex.split(cli)
+    # Resolve a single relative executable (e.g. vendor/.../codeguardian.sh)
+    if len(parts) == 1 and not Path(parts[0]).is_absolute():
+        resolved = Path(parts[0]).expanduser().resolve()
+        if resolved.exists():
+            parts = [str(resolved)]
     cmd = [*parts, mode, "-p", str(worktree)]
 
     try:

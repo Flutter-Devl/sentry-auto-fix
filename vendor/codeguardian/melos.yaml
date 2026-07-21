@@ -1,0 +1,16 @@
+name: codeguardian
+
+# Vendored subset for sentry-auto-fix (validate / analyze CLI only).
+packages:
+  - packages/codeguardian_core
+  - packages/codeguardian_rules
+  - packages/codeguardian_native
+  - packages/codeguardian_fixer
+  - packages/codeguardian_validator
+  - packages/codeguardian_reporter
+  - packages/codeguardian_ai
+  - packages/codeguardian_cli
+
+command:
+  bootstrap:
+    usePubspecOverrides: true

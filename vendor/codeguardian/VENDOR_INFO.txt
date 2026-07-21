@@ -1,0 +1,4 @@
+# Vendored from https://github.com/suleman1994/codeGuardianAIFlutter (dev/v1.0)
+# CLI packages only — dashboard/server omitted. Bootstrap via ./setup.sh
+VENDOR_SOURCE=suleman1994/codeGuardianAIFlutter
+VENDOR_REF=dev/v1.0

@@ -1,0 +1,18 @@
+name: codeguardian_core
+description: Core models, interfaces, and the static analysis engine foundation used by every other package.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: '^3.4.0'
+
+dependencies:
+  # Resolves Dart files with full type information. This is the only heavyweight
+  # dependency the engine needs. Deliberately no Flutter, no AI, no networking.
+  analyzer: ^6.4.0
+  meta: ^1.15.0
+  path: ^1.9.0
+
+dev_dependencies:
+  lints: ^4.0.0
+  test: ^1.25.0

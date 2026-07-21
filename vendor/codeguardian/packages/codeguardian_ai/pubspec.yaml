@@ -1,0 +1,19 @@
+name: codeguardian_ai
+description: AI/LLM-backed analysis and suggestion features.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: '^3.4.0'
+
+dependencies:
+  codeguardian_core:
+    path: ../codeguardian_core
+  codeguardian_rules:
+    path: ../codeguardian_rules
+  http: ^1.2.0
+  meta: ^1.15.0
+
+dev_dependencies:
+  lints: ^4.0.0
+  test: ^1.25.0

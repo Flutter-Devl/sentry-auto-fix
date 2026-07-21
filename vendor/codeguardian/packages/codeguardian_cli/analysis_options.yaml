@@ -1,0 +1,12 @@
+include: package:lints/recommended.yaml
+
+analyzer:
+  exclude:
+    # These fixture projects deliberately contain rule violations (unused
+    # imports, missing const, hardcoded secrets, ...) to exercise the
+    # analyze/validate/improve/refactor commands; they aren't meant to pass
+    # standard analysis.
+    - test/fixtures/**
+
+linter:
+  rules: {}

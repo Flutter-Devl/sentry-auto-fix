@@ -1,0 +1,10 @@
+name: codeguardian_workspace
+description: Root workspace for the CodeGuardian AI monorepo. Not published.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: '^3.4.0'
+
+dev_dependencies:
+  melos: ^6.3.2

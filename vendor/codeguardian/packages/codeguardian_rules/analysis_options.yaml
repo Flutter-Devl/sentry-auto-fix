@@ -1,0 +1,10 @@
+include: package:lints/recommended.yaml
+
+analyzer:
+  exclude:
+    # These fixtures deliberately violate the quality rules under test; they
+    # aren't meant to pass standard analysis.
+    - test/fixtures/**
+
+linter:
+  rules: {}

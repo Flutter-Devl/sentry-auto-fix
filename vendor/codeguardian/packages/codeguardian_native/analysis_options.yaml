@@ -1,0 +1,11 @@
+include: package:lints/recommended.yaml
+
+analyzer:
+  exclude:
+    # This fixture deliberately references package:flutter (unavailable in
+    # this package's own dependency graph) and platform channel patterns
+    # under test; it isn't meant to pass standard analysis.
+    - test/fixtures/platform_channel_project/lib/**
+
+linter:
+  rules: {}

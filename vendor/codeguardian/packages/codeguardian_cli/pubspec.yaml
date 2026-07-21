@@ -1,0 +1,32 @@
+name: codeguardian_cli
+description: Command-line interface entry point for CodeGuardian AI.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: '^3.4.0'
+
+dependencies:
+  codeguardian_core:
+    path: ../codeguardian_core
+  codeguardian_rules:
+    path: ../codeguardian_rules
+  codeguardian_native:
+    path: ../codeguardian_native
+  codeguardian_fixer:
+    path: ../codeguardian_fixer
+  codeguardian_validator:
+    path: ../codeguardian_validator
+  codeguardian_reporter:
+    path: ../codeguardian_reporter
+  codeguardian_ai:
+    path: ../codeguardian_ai
+  args: ^2.5.0
+  path: ^1.9.0
+
+dev_dependencies:
+  lints: ^4.0.0
+  test: ^1.25.0
+
+executables:
+  codeguardian: codeguardian

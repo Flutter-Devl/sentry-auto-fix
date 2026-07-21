@@ -1,0 +1,22 @@
+name: codeguardian_validator
+description: Validation pipeline that checks rule results and fixes for correctness.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: '^3.4.0'
+
+dependencies:
+  codeguardian_core:
+    path: ../codeguardian_core
+  codeguardian_rules:
+    path: ../codeguardian_rules
+  crypto: ^3.0.0
+  glob: ^2.1.0
+  meta: ^1.15.0
+  path: ^1.9.0
+  yaml: ^3.1.0
+
+dev_dependencies:
+  lints: ^4.0.0
+  test: ^1.25.0

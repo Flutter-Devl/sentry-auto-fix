@@ -1,60 +1,100 @@
 #!/usr/bin/env bash
-# Quick setup checks for sentry-auto-fix
+# One-time dependency setup for the combined Sentry Auto-Fix + CodeGuardian toolkit.
+# Does NOT install the LaunchAgent — use: ./run.sh flutter install-auto  (or start).
 set -euo pipefail
-cd "$(dirname "$0")"
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT"
+
+CG_ROOT="$ROOT/vendor/codeguardian"
+CG_WRAPPER="$CG_ROOT/bin/codeguardian.sh"
 
 echo "==> Python venv"
 if [[ ! -d .venv ]]; then
   python3 -m venv .venv
 fi
+# shellcheck disable=SC1091
 source .venv/bin/activate
 pip install -q -r requirements.txt
+echo "    OK (.venv + requirements)"
 
-echo "==> Load config"
+echo "==> config.env"
 if [[ ! -f config.env ]]; then
-  echo "Missing config.env — copy from config.example.env"
-  exit 1
-fi
-set -a && source config.env && set +a
-
-echo "==> Cursor auth"
-if [[ -z "${CURSOR_API_KEY:-}" ]]; then
-  echo "CURSOR_API_KEY empty — run: cursor agent login"
-  cursor agent login || true
-fi
-cursor agent --print "Reply OK" || {
-  echo "Cursor auth failed. Set CURSOR_API_KEY in config.env or run cursor agent login"
-  exit 1
-}
-
-echo "==> Sentry API"
-python - <<'PY'
-import os, requests
-token = os.environ["SENTRY_AUTH_TOKEN"]
-org = os.environ["SENTRY_ORG_SLUG"]
-url = f"{os.environ.get('SENTRY_REGION_URL', 'https://us.sentry.io').rstrip('/')}/api/0/organizations/{org}/issues/"
-r = requests.get(url, headers={"Authorization": f"Bearer {token}"}, params={"query": "is:unresolved", "limit": 1}, timeout=30)
-r.raise_for_status()
-print(f"Sentry OK — sample issues returned: {len(r.json())}")
-PY
-
-if [[ "${BITBUCKET_ACCESS_TOKEN:-}" == *PASTE_* ]] || [[ -z "${BITBUCKET_ACCESS_TOKEN:-}" ]]; then
-  echo "WARN: Set BITBUCKET_ACCESS_TOKEN in config.env before real runs"
+  cp config.example.env config.env
+  echo "    Created config.env from config.example.env — edit secrets before running."
 else
-  echo "==> Bitbucket API"
-  python - <<'PY'
-import os, requests
-ws = os.environ["BITBUCKET_WORKSPACE"]
-repo = os.environ["BITBUCKET_REPO_SLUG"]
-token = os.environ["BITBUCKET_ACCESS_TOKEN"]
-url = f"https://api.bitbucket.org/2.0/repositories/{ws}/{repo}"
-r = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
-r.raise_for_status()
-print(f"Bitbucket OK — repo: {r.json().get('full_name')}")
-PY
+  echo "    config.env already present"
 fi
+
+echo "==> Dart / Flutter (CodeGuardian)"
+if ! command -v dart >/dev/null 2>&1; then
+  echo "ERROR: dart not on PATH. Install Flutter SDK and ensure dart is available." >&2
+  exit 1
+fi
+echo "    dart: $(command -v dart) ($(dart --version 2>&1 | head -1))"
+
+if ! command -v melos >/dev/null 2>&1; then
+  echo "    activating melos..."
+  dart pub global activate melos
+fi
+# Ensure pub-cache bin is usable for this shell
+export PATH="${PATH}:$(dart pub cache path 2>/dev/null || true)/bin"
+export PATH="${HOME}/.pub-cache/bin:${PATH}"
+if ! command -v melos >/dev/null 2>&1; then
+  echo "ERROR: melos not found after activate. Add \$HOME/.pub-cache/bin to PATH." >&2
+  exit 1
+fi
+
+echo "==> Bootstrap vendored CodeGuardian"
+if [[ ! -d "$CG_ROOT/packages/codeguardian_cli" ]]; then
+  echo "ERROR: missing $CG_ROOT/packages — incomplete checkout?" >&2
+  exit 1
+fi
+chmod +x "$CG_WRAPPER"
+(
+  cd "$CG_ROOT"
+  dart pub get >/dev/null
+  melos bootstrap
+)
+echo "    OK (melos bootstrap)"
+
+echo "==> Smoke-test CodeGuardian CLI"
+"$CG_WRAPPER" --help >/dev/null
+echo "    OK ($CG_WRAPPER)"
+
+echo "==> Wire CodeGuardian into config.env"
+# Enable + point at vendored CLI (idempotent)
+python3 - <<PY
+from pathlib import Path
+import re
+p = Path("config.env")
+text = p.read_text()
+wrapper = "${CG_WRAPPER}"
+replacements = {
+    "CODEGUARDIAN_ENABLED": "true",
+    "CODEGUARDIAN_CLI": wrapper,
+    "CODEGUARDIAN_MODE": "validate",
+}
+for key, val in replacements.items():
+    pattern = rf"^{key}=.*$"
+    line = f"{key}={val}"
+    if re.search(pattern, text, flags=re.M):
+        text = re.sub(pattern, line, text, count=1, flags=re.M)
+    else:
+        text = text.rstrip() + f"\n{line}\n"
+p.write_text(text)
+print(f"    CODEGUARDIAN_ENABLED=true")
+print(f"    CODEGUARDIAN_CLI={wrapper}")
+PY
 
 echo ""
-echo "All checks done. Next:"
-echo "  DRY_RUN=true python orchestrator.py poll"
-echo "  python orchestrator.py fix --issue-id <NUMERIC_ID>"
+echo "Setup complete (deps only — LaunchAgent not installed)."
+echo ""
+echo "Next:"
+echo "  1. Edit config.env  (REPO_ROOT, Sentry, Bitbucket, Cursor)"
+echo "  2. Optional background:  ./run.sh flutter install-auto"
+echo "  3. Run once:            ./run.sh flutter once"
+echo "  4. Or start loop:       ./run.sh flutter start"
+echo ""
+echo "CodeGuardian alone:"
+echo "  $CG_WRAPPER validate -p \"\$REPO_ROOT\""

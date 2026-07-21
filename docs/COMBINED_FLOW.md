@@ -9,16 +9,16 @@
 
 ## 1. Executive summary
 
-We did **not** merge the two GitHub repositories into one codebase.
+This toolkit ships **both engines in one GitHub branch** (`feature/combined-sentry-codeguardian`):
 
-We **combined them in a pipeline**:
+| Tool | Location | Role |
+|------|----------|------|
+| **Sentry Auto-Fix** | repo root | Detects live Sentry issues → AI fix → draft Bitbucket PR |
+| **CodeGuardian AI** | `vendor/codeguardian/` | Static analysis of Flutter/Dart on the fix worktree |
 
-| Tool | Repo | Role |
-|------|------|------|
-| **Sentry Auto-Fix** | [Flutter-Devl/sentry-auto-fix](https://github.com/Flutter-Devl/sentry-auto-fix) | Detects live Sentry issues → AI fix → draft Bitbucket PR |
-| **CodeGuardian AI** | [suleman1994/codeGuardianAIFlutter](https://github.com/suleman1994/codeGuardianAIFlutter) | Static analysis of Flutter/Dart (security, correctness, performance) |
+**One clone, one `./setup.sh` (deps), then `./run.sh` as before.** See `docs/COMBINED_ONE_REPO.md`.
 
-**Result:** CodeGuardian **prevents** known Flutter bad patterns before / around merge; Sentry Auto-Fix **remediates** real production crashes. After an auto-fix, CodeGuardian can optionally **re-scan the fix worktree** and block the draft PR if static gates fail.
+Soft-couple via an external CodeGuardian clone is obsolete on this branch — the CLI is vendored.
 
 ---
 
