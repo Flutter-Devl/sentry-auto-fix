@@ -111,7 +111,7 @@ cursor agent login
 | `./run.sh [profile] record-rejection <SHORT_ID> "reason"` | Store PR rejection lesson for future runs |
 | `./run.sh [profile] list-rejections` | List stored rejection lessons |
 | `./run.sh [profile] sync-pr-feedback` | Import declined PR feedback from Bitbucket |
-| `./run.sh [profile] record-rejection <SHORT_ID> "reason"` | Store PR rejection lesson |
+| `./run.sh [profile] test-slack` | Send test message to Slack webhook |
 | `./run.sh [profile] list-rejections` | List stored rejection lessons |
 | `./run.sh [profile] sync-pr-feedback` | Sync declined PR feedback from Bitbucket |
 
@@ -343,5 +343,38 @@ When reviewers decline or comment on auto-fix PRs, capture the lesson so the age
 Lessons are stored in `.state/<profile>/rejection-lessons.json` and injected into every agent prompt.
 
 Auto-sync on each run: `SYNC_PR_FEEDBACK_ON_RUN=true` (default).
+
+---
+
+## Slack notifications (Phase 1)
+
+Post run outcomes to a Slack channel via **Incoming Webhook**.
+
+1. Slack → **Apps** → **Incoming Webhooks** → add to channel (e.g. `#sentry-autofix`)
+2. Copy webhook URL into `config.env`:
+
+```env
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+SLACK_NOTIFY_ENABLED=true
+SLACK_NOTIFY_RUN_START=false   # set true to ping every cycle start (noisy)
+```
+
+3. Test:
+
+```bash
+./run.sh flutter test-slack
+```
+
+**Notified automatically after each cycle:**
+
+| Event | Slack |
+|-------|-------|
+| Draft PR created | 📋 link to PR |
+| Branch pushed, no PR | 📤 manual PR needed |
+| Quality gate failed | 🚫 tests/confidence blocked PR |
+| NO_ACTION | ⏭️ nothing to fix |
+| Agent failed | ⚠️ cursor exit code |
+
+PR merge/decline notifications come in **Phase 2** (Bitbucket webhook).
 
 ---
