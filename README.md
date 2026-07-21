@@ -357,35 +357,32 @@ Auto-sync on each run: `SYNC_PR_FEEDBACK_ON_RUN=true` (default).
 
 ---
 
-## Slack notifications (Phase 1)
+## Slack notifications (status channel)
 
-Post run outcomes to a Slack channel via **Incoming Webhook**.
+Post full run status to one Slack channel via **Incoming Webhook**.  
+See `docs/SLACK_STATUS.md`.
 
-1. Slack → **Apps** → **Incoming Webhooks** → add to channel (e.g. `#sentry-autofix`)
-2. Copy webhook URL into `config.env`:
+1. Slack channel → **Integrations** → **Incoming Webhooks** → copy URL  
+2. In `config.env`:
 
 ```env
 SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
 SLACK_NOTIFY_ENABLED=true
-SLACK_NOTIFY_RUN_START=false   # set true to ping every cycle start (noisy)
+SLACK_NOTIFY_CODEGUARDIAN=true
+SLACK_NOTIFY_PR_MERGED=true
+SLACK_NOTIFY_RUN_START=false   # noisy if true
 ```
 
-3. Test:
-
-```bash
-./run.sh flutter test-slack
-```
-
-**Notified automatically after each cycle:**
+3. Test: `./run.sh flutter test-slack`
 
 | Event | Slack |
 |-------|-------|
-| Draft PR created | 📋 link to PR |
-| Branch pushed, no PR | 📤 manual PR needed |
-| Quality gate failed | 🚫 tests/confidence blocked PR |
-| NO_ACTION | ⏭️ nothing to fix |
-| Agent failed | ⚠️ cursor exit code |
-
-PR merge/decline notifications come in **Phase 2** (Bitbucket webhook).
+| Draft PR created | 📋 PR link + issue/branch |
+| PR merged | ✅ polled from Bitbucket each cycle |
+| CodeGuardian passed | 🛡️ validate OK + detail |
+| CodeGuardian failed | 🛑 blocked PR + findings |
+| Quality gate failed | 🚫 tests/confidence/policy |
+| Branch pushed, no PR | 📤 |
+| NO_ACTION / agent failed | ⏭️ / ⚠️ |
 
 ---

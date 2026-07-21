@@ -91,6 +91,8 @@ SYNC_PR_FEEDBACK_ON_RUN="${SYNC_PR_FEEDBACK_ON_RUN:-true}"
 SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_URL:-}"
 SLACK_NOTIFY_ENABLED="${SLACK_NOTIFY_ENABLED:-true}"
 SLACK_NOTIFY_RUN_START="${SLACK_NOTIFY_RUN_START:-false}"
+SLACK_NOTIFY_CODEGUARDIAN="${SLACK_NOTIFY_CODEGUARDIAN:-true}"
+SLACK_NOTIFY_PR_MERGED="${SLACK_NOTIFY_PR_MERGED:-true}"
 # Vendored CodeGuardian defaults (one repo — no second clone). Override in config.env.
 _CG_VENDOR_CLI="${SCRIPT_DIR}/vendor/codeguardian/bin/codeguardian.sh"
 CODEGUARDIAN_ENABLED="${CODEGUARDIAN_ENABLED:-true}"
@@ -424,9 +426,19 @@ PY
 
   if [[ "$http_code" == "201" ]]; then
     pr_url="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('links',{}).get('html',{}).get('href',''))" <<< "$response")"
+    pr_id="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))" <<< "$response")"
+    pr_title="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('title',''))" <<< "$response")"
     log_line "PR_URL=${pr_url}"
     echo "PR_URL=${pr_url}" >> "$LAST_RUN_FILE"
     echo "PR_URL=${pr_url}" >> "$LOG_FILE"
+    if [[ -n "$pr_id" ]]; then
+      echo "PR_ID=${pr_id}" >> "$LAST_RUN_FILE"
+      if [[ -f "${STATE_DIR}/run-result.env" ]]; then
+        echo "PR_URL=${pr_url}" >> "${STATE_DIR}/run-result.env"
+        echo "PR_ID=${pr_id}" >> "${STATE_DIR}/run-result.env"
+      fi
+      track_created_pr "$pr_id" "$pr_url" "$branch" "$pr_title"
+    fi
     return 0
   fi
 
@@ -540,46 +552,125 @@ slack_notify() {
     "$@" >> "$LOG_FILE" 2>&1 || log_line "slack: notify failed (non-fatal)"
 }
 
+read_detail_file() {
+  local path="$1"
+  if [[ -f "$path" ]]; then
+    # Keep Slack payload bounded
+    head -c 4000 "$path" | tr '\n' ' ' | sed 's/  */ /g'
+  fi
+}
+
+track_created_pr() {
+  local pr_id="$1"
+  local pr_url="$2"
+  local branch="$3"
+  local title="${4:-}"
+  local short_id tier issue_url
+
+  short_id="$(parse_last_run_field "ISSUE_SHORT_ID")"
+  tier="$(parse_last_run_field "ISSUE_TIER")"
+  issue_url="$(parse_last_run_field "ISSUE_URL")"
+
+  ensure_python_env
+  "$PYTHON_BIN" "${SCRIPT_DIR}/pr_tracker.py" --state-dir "${STATE_DIR}" track \
+    --pr-id "$pr_id" \
+    --pr-url "$pr_url" \
+    --branch "$branch" \
+    --title "$title" \
+    ${short_id:+--issue-short-id "$short_id"} \
+    ${tier:+--issue-tier "$tier"} \
+    ${issue_url:+--issue-url "$issue_url"} >> "$LOG_FILE" 2>&1 || log_line "pr-tracker: track failed (non-fatal)"
+}
+
+poll_merged_prs() {
+  [[ "${SLACK_NOTIFY_ENABLED}" == "true" ]] || return 0
+  [[ "${SLACK_NOTIFY_PR_MERGED}" == "true" ]] || return 0
+  [[ -n "${SLACK_WEBHOOK_URL:-}" ]] || return 0
+  [[ -n "${BITBUCKET_ACCESS_TOKEN:-}" ]] || return 0
+
+  ensure_python_env
+  "$PYTHON_BIN" "${SCRIPT_DIR}/pr_tracker.py" --state-dir "${STATE_DIR}" poll-merged \
+    --workspace "${BITBUCKET_WORKSPACE}" \
+    --repo-slug "${BITBUCKET_REPO_SLUG}" \
+    --access-token "${BITBUCKET_ACCESS_TOKEN}" \
+    --auth "${BITBUCKET_AUTH}" \
+    --email "${BITBUCKET_EMAIL:-}" \
+    --webhook-url "${SLACK_WEBHOOK_URL}" \
+    --profile "${ACTIVE_PROFILE}" >> "$LOG_FILE" 2>&1 || log_line "pr-tracker: poll-merged failed (non-fatal)"
+}
+
 slack_notify_run_outcome() {
   local agent_exit="${1:-0}"
-  local short_id tier branch pr_url issue_url detail event=""
+  local short_id tier branch pr_url issue_url detail event="" gate_reason cg_status
+  local common_args=()
 
   short_id="$(parse_last_run_field "ISSUE_SHORT_ID")"
   tier="$(parse_last_run_field "ISSUE_TIER")"
   branch="$(parse_last_run_field "BRANCH_NAME")"
   pr_url="$(parse_last_run_field "PR_URL")"
   issue_url="$(parse_last_run_field "ISSUE_URL")"
+  gate_reason="$(parse_last_run_field "QUALITY_GATE_REASON")"
+  cg_status="$(parse_last_run_field "CODEGUARDIAN_STATUS")"
+
+  common_args=(
+    ${short_id:+--issue-short-id "$short_id"}
+    ${tier:+--issue-tier "$tier"}
+    ${branch:+--branch "$branch"}
+    ${pr_url:+--pr-url "$pr_url"}
+    ${issue_url:+--issue-url "$issue_url"}
+    ${gate_reason:+--gate-reason "$gate_reason"}
+    ${cg_status:+--cg-status "$cg_status"}
+  )
 
   if [[ "$agent_exit" -ne 0 ]]; then
-    event="agent_failed"
-    detail="Cursor agent exited with code ${agent_exit}"
-  elif last_run_no_action; then
-    event="no_action"
-    detail="No tier1/tier2/tier3 candidate to fix this cycle"
-  elif quality_gate_failed; then
-    event="quality_gate_failed"
-    detail="Tests/confidence/policy check failed — branch may exist on origin"
-  elif [[ -n "$pr_url" ]]; then
-    event="pr_created"
+    slack_notify "agent_failed" "${common_args[@]}" \
+      --detail "Cursor agent exited with code ${agent_exit}"
+    return 0
+  fi
+
+  if last_run_no_action; then
+    slack_notify "no_action" "${common_args[@]}" \
+      --detail "No tier1/tier2/tier3 candidate to fix this cycle"
+    return 0
+  fi
+
+  # Explicit CodeGuardian outcomes (full detail file when present)
+  if [[ "${SLACK_NOTIFY_CODEGUARDIAN}" == "true" ]]; then
+    if [[ "$cg_status" == "failed" ]]; then
+      detail="$(read_detail_file "${STATE_DIR}/codeguardian-detail.txt")"
+      slack_notify "codeguardian_failed" "${common_args[@]}" \
+        --detail "${detail:-CodeGuardian validate failed}"
+    elif [[ "$cg_status" == "passed" ]]; then
+      detail="$(read_detail_file "${STATE_DIR}/codeguardian-detail.txt")"
+      slack_notify "codeguardian_passed" "${common_args[@]}" \
+        --detail "${detail:-CodeGuardian validate passed}"
+    fi
+  fi
+
+  if quality_gate_failed; then
+    if [[ "$gate_reason" == "codeguardian" ]]; then
+      # Already notified as codeguardian_failed above
+      return 0
+    fi
+    detail="$(read_detail_file "${STATE_DIR}/test-gate-detail.txt")"
+    [[ -z "$detail" ]] && detail="Tests/confidence/policy check failed — branch may exist on origin"
+    slack_notify "quality_gate_failed" "${common_args[@]}" --detail "$detail"
+    return 0
+  fi
+
+  if [[ -n "$pr_url" ]]; then
+    slack_notify "pr_created" "${common_args[@]}" \
+      --detail "Draft PR opened for autofix branch"
   elif [[ -n "$branch" ]]; then
-    event="branch_pushed"
     if [[ "${BITBUCKET_PR_ENABLED}" != "true" ]]; then
       detail="BITBUCKET_PR_ENABLED=false — open PR manually in Bitbucket"
     else
       detail="PR was not created — check run.log"
     fi
-  else
-    return 0
+    slack_notify "branch_pushed" "${common_args[@]}" --detail "$detail"
   fi
-
-  slack_notify "$event" \
-    ${short_id:+--issue-short-id "$short_id"} \
-    ${tier:+--issue-tier "$tier"} \
-    ${branch:+--branch "$branch"} \
-    ${pr_url:+--pr-url "$pr_url"} \
-    ${issue_url:+--issue-url "$issue_url"} \
-    ${detail:+--detail "$detail"}
 }
+
 
 build_sentry_issue_url() {
   local short_id="$1"
@@ -1043,6 +1134,9 @@ run_once_locked() {
   log_status "starting run"
   preflight
 
+  # Detect PRs that merged since last cycle (Slack "PR merged")
+  poll_merged_prs
+
   if [[ "${SLACK_NOTIFY_RUN_START}" == "true" ]]; then
     slack_notify "run_started" --detail "Polling Sentry and running Cursor agent"
   fi
@@ -1297,6 +1391,7 @@ start_auto_run() {
 run_daemon_foreground() {
   while true; do
     log_line "daemon: waiting ${POLL_SECONDS}s between cycles"
+    poll_merged_prs
     run_once_locked || true
     if last_run_no_action; then
       log_line "daemon: NO_ACTION — sleeping until next poll"

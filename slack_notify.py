@@ -11,6 +11,9 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+# Slack section text hard limit is ~3000; keep headroom for markup.
+_MAX_DETAIL_CHARS = 2500
+
 
 def send_slack(
     webhook_url: str,
@@ -41,6 +44,13 @@ def _mrkdwn_section(text: str) -> dict[str, Any]:
     return {"type": "section", "text": {"type": "mrkdwn", "text": text}}
 
 
+def _truncate(text: str, limit: int = _MAX_DETAIL_CHARS) -> str:
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 20] + "\n… _(truncated)_"
+
+
 def build_run_outcome_message(
     *,
     profile: str,
@@ -52,39 +62,52 @@ def build_run_outcome_message(
     issue_url: str = "",
     repo_slug: str = "",
     detail: str = "",
+    title: str = "",
+    gate_reason: str = "",
+    cg_status: str = "",
 ) -> tuple[str, list[dict[str, Any]]]:
     labels = {
         "run_started": ("🔧", "Fix cycle started"),
         "no_action": ("⏭️", "No actionable issue"),
         "pr_created": ("📋", "Draft PR created"),
+        "pr_merged": ("✅", "PR merged"),
         "branch_pushed": ("📤", "Branch pushed (no auto-PR)"),
         "quality_gate_failed": ("🚫", "Quality gate failed — PR blocked"),
+        "codeguardian_passed": ("🛡️", "CodeGuardian passed"),
+        "codeguardian_failed": ("🛑", "CodeGuardian failed — PR blocked"),
         "agent_failed": ("⚠️", "Agent run failed"),
     }
-    emoji, title = labels.get(event, ("ℹ️", event.replace("_", " ").title()))
+    emoji, heading = labels.get(event, ("ℹ️", event.replace("_", " ").title()))
 
-    fallback = f"{emoji} Sentry Auto-Fix [{profile}] — {title}"
+    fallback = f"{emoji} Sentry Auto-Fix [{profile}] — {heading}"
     if issue_short_id:
         fallback += f" — {issue_short_id}"
 
     lines = [
-        f"{emoji} *{title}*",
+        f"{emoji} *{heading}*",
         f"*Profile:* `{profile}`",
     ]
     if issue_short_id:
-        lines.append(f"*Issue:* `{issue_short_id}`{f' ({issue_tier})' if issue_tier else ''}")
+        lines.append(
+            f"*Issue:* `{issue_short_id}`"
+            f"{f' ({issue_tier})' if issue_tier else ''}"
+        )
+    if title:
+        lines.append(f"*Title:* {title}")
     if branch:
         lines.append(f"*Branch:* `{branch}`")
+    if gate_reason:
+        lines.append(f"*Gate reason:* `{gate_reason}`")
+    if cg_status:
+        lines.append(f"*CodeGuardian:* `{cg_status}`")
     if pr_url:
         lines.append(f"*PR:* <{pr_url}|Open pull request>")
-    elif branch and repo_slug:
-        lines.append(
-            f"*PR:* create manually in Bitbucket for `{branch}`"
-        )
+    elif branch and repo_slug and event not in ("pr_merged",):
+        lines.append(f"*PR:* create manually in Bitbucket for `{branch}`")
     if issue_url:
         lines.append(f"*Sentry:* <{issue_url}|View issue>")
     if detail:
-        lines.append(f"*Detail:* {detail}")
+        lines.append(f"*Detail:*\n```{_truncate(detail)}```")
 
     blocks = [_mrkdwn_section("\n".join(lines))]
     return fallback, blocks
@@ -102,6 +125,9 @@ def notify_run_outcome(
     issue_url: str = "",
     repo_slug: str = "",
     detail: str = "",
+    title: str = "",
+    gate_reason: str = "",
+    cg_status: str = "",
 ) -> None:
     text, blocks = build_run_outcome_message(
         profile=profile,
@@ -113,6 +139,9 @@ def notify_run_outcome(
         issue_url=issue_url,
         repo_slug=repo_slug,
         detail=detail,
+        title=title,
+        gate_reason=gate_reason,
+        cg_status=cg_status,
     )
     send_slack(webhook_url, text=text, blocks=blocks)
 
@@ -132,6 +161,9 @@ def main() -> int:
     run.add_argument("--issue-url", default="")
     run.add_argument("--repo-slug", default="")
     run.add_argument("--detail", default="")
+    run.add_argument("--title", default="")
+    run.add_argument("--gate-reason", default="")
+    run.add_argument("--cg-status", default="")
 
     test = sub.add_parser("test")
     test.add_argument("--webhook-url", default=os.environ.get("SLACK_WEBHOOK_URL", ""))
@@ -164,6 +196,9 @@ def main() -> int:
         issue_url=args.issue_url,
         repo_slug=args.repo_slug,
         detail=args.detail,
+        title=args.title,
+        gate_reason=args.gate_reason,
+        cg_status=args.cg_status,
     )
     print(f"Slack notified: {args.event}")
     return 0

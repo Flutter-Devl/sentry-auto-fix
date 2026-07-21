@@ -113,8 +113,29 @@ def default_test_command(profile: str, pr_body_path: Path, worktree: Path) -> st
     return ""
 
 
+def append_result_env(state_dir: Path, **fields: str) -> None:
+    result_path = state_dir / "run-result.env"
+    lines = []
+    for key, value in fields.items():
+        if value is None:
+            continue
+        # Single-line env values; collapse newlines for shell parsers.
+        safe = " ".join(str(value).splitlines()).strip()
+        lines.append(f"{key}={safe}")
+    if not lines:
+        return
+    with result_path.open("a", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+
+
+def write_detail_file(state_dir: Path, name: str, text: str) -> None:
+    path = state_dir / name
+    path.write_text((text or "").strip() + "\n", encoding="utf-8")
+
+
 def run_codeguardian_gate(
     *,
+    state_dir: Path,
     worktree: Path,
     profile: str,
     enabled: bool,
@@ -126,12 +147,15 @@ def run_codeguardian_gate(
     """Optional CodeGuardian validate after unit tests (Flutter only)."""
     if not enabled:
         print("quality-gates: CodeGuardian disabled")
+        append_result_env(state_dir, CODEGUARDIAN_STATUS="disabled")
         return 0
     if profile not in ("flutter", "mobile", "dart"):
         print("quality-gates: CodeGuardian skipped (Flutter profile only)")
+        append_result_env(state_dir, CODEGUARDIAN_STATUS="skipped")
         return 0
     if not cli.strip():
         print("quality-gates: CodeGuardian enabled but CODEGUARDIAN_CLI empty — skip")
+        append_result_env(state_dir, CODEGUARDIAN_STATUS="skipped")
         return 0
 
     from codeguardian_gate import run_codeguardian
@@ -141,9 +165,17 @@ def run_codeguardian_gate(
         worktree=worktree, cli=cli, mode=mode, timeout=timeout
     )
     print(detail)
+    write_detail_file(state_dir, "codeguardian-detail.txt", detail)
     if ok:
         print("quality-gates: CodeGuardian PASSED")
+        append_result_env(state_dir, CODEGUARDIAN_STATUS="passed", CODEGUARDIAN_MODE=mode)
         return 0
+    append_result_env(
+        state_dir,
+        CODEGUARDIAN_STATUS="failed",
+        CODEGUARDIAN_MODE=mode,
+        QUALITY_GATE_REASON="codeguardian",
+    )
     if fail_blocks_pr:
         print("quality-gates: FAILED — CodeGuardian gate blocked PR")
         return 1
@@ -190,39 +222,43 @@ def verify(
 
     print(f"quality-gates: tier={tier or 'unknown'} confidence={confidence} strategy={strategy or 'n/a'}")
 
-    if conf_rank < min_rank:
-        print(f"quality-gates: FAILED — FIX_CONFIDENCE={confidence} below minimum {min_confidence}")
+    def fail(reason: str, message: str) -> int:
+        print(message)
+        append_result_env(state_dir, QUALITY_GATE_REASON=reason)
         return 1
+
+    if conf_rank < min_rank:
+        return fail(
+            "confidence",
+            f"quality-gates: FAILED — FIX_CONFIDENCE={confidence} below minimum {min_confidence}",
+        )
 
     diff = git_diff_text(worktree)
     if tier in ("tier1", "tier2") and diff_has_before_send_filter(diff):
-        print("quality-gates: FAILED — beforeSend / Sentry filter change banned for tier1/tier2")
-        return 1
+        return fail(
+            "beforeSend",
+            "quality-gates: FAILED — beforeSend / Sentry filter change banned for tier1/tier2",
+        )
+
+    cg_kwargs = dict(
+        state_dir=state_dir,
+        worktree=worktree,
+        profile=profile,
+        enabled=codeguardian_enabled,
+        cli=codeguardian_cli,
+        mode=codeguardian_mode,
+        timeout=codeguardian_timeout,
+        fail_blocks_pr=codeguardian_fail_blocks_pr,
+    )
 
     if not test_gate_enabled:
         print("quality-gates: test gate disabled")
-        return run_codeguardian_gate(
-            worktree=worktree,
-            profile=profile,
-            enabled=codeguardian_enabled,
-            cli=codeguardian_cli,
-            mode=codeguardian_mode,
-            timeout=codeguardian_timeout,
-            fail_blocks_pr=codeguardian_fail_blocks_pr,
-        )
+        return run_codeguardian_gate(**cg_kwargs)
 
     require_tests = require_tests_tier12 and tier in ("tier1", "tier2")
     if not require_tests:
         print("quality-gates: tests not required for this tier")
-        return run_codeguardian_gate(
-            worktree=worktree,
-            profile=profile,
-            enabled=codeguardian_enabled,
-            cli=codeguardian_cli,
-            mode=codeguardian_mode,
-            timeout=codeguardian_timeout,
-            fail_blocks_pr=codeguardian_fail_blocks_pr,
-        )
+        return run_codeguardian_gate(**cg_kwargs)
 
     if not test_command:
         test_command, body_result = parse_pr_body_tests(pr_body_path)
@@ -233,8 +269,10 @@ def verify(
         test_command = default_test_command(profile, pr_body_path, worktree)
 
     if not test_command:
-        print("quality-gates: FAILED — no TEST_COMMAND provided for tier1/tier2")
-        return 1
+        return fail(
+            "tests",
+            "quality-gates: FAILED — no TEST_COMMAND provided for tier1/tier2",
+        )
 
     if test_result == "PASSED":
         print(f"quality-gates: agent reported tests PASSED ({test_command})")
@@ -242,20 +280,12 @@ def verify(
         print(f"quality-gates: running tests: {test_command}")
         ok, tail = run_test_command(worktree, test_command, test_timeout)
         print(tail)
+        write_detail_file(state_dir, "test-gate-detail.txt", tail)
         if not ok:
-            print("quality-gates: FAILED — tests did not pass")
-            return 1
+            return fail("tests", "quality-gates: FAILED — tests did not pass")
         print("quality-gates: tests PASSED")
 
-    return run_codeguardian_gate(
-        worktree=worktree,
-        profile=profile,
-        enabled=codeguardian_enabled,
-        cli=codeguardian_cli,
-        mode=codeguardian_mode,
-        timeout=codeguardian_timeout,
-        fail_blocks_pr=codeguardian_fail_blocks_pr,
-    )
+    return run_codeguardian_gate(**cg_kwargs)
 
 
 def main() -> int:
