@@ -49,25 +49,25 @@ git clone https://github.com/Flutter-Devl/sentry-auto-fix.git
 cd sentry-auto-fix
 git checkout feature/combined-sentry-codeguardian
 
-# One-time deps (Python venv + CodeGuardian Melos). Does NOT install LaunchAgent.
+# 1) One-time deps
 ./setup.sh
 
-# Edit secrets / REPO_ROOT
+# 2) Edit secrets / REPO_ROOT once
 $EDITOR config.env
+# cursor agent login   # or set CURSOR_API_KEY in config.env
 
-# Authenticate Cursor (once)
-cursor agent login
-# OR set CURSOR_API_KEY in config.env
+# 3) One-time: turn on forever automation (LaunchAgent) — same model as before
+./setup.sh --auto
+# equivalent: ./run.sh flutter start
+```
 
-# Optional: background auto-run (LaunchAgent)
-./run.sh flutter install-auto
+After that it keeps working in the background (login + KeepAlive). Monitor with `./run.sh flutter status`.
 
-# Run one fix cycle
+One-shot without daemon:
+
+```bash
 ./run.sh flutter once
 ./run.sh laravel once
-
-# Check run result
-./run.sh flutter status
 ```
 
 ---

@@ -15,29 +15,27 @@ Dashboard/server from upstream CodeGuardian are **not** vendored — only packag
 
 Upstream source: [codeGuardianAIFlutter `dev/v1.0`](https://github.com/suleman1994/codeGuardianAIFlutter) (see `vendor/codeguardian/VENDOR_INFO.txt`).
 
-## One-time setup
+## One-time setup (then it keeps running)
 
 ```bash
 git clone https://github.com/Flutter-Devl/sentry-auto-fix.git
 cd sentry-auto-fix
 git checkout feature/combined-sentry-codeguardian
-./setup.sh          # venv + melos bootstrap + wire CODEGUARDIAN_* in config.env
-# edit config.env
-./run.sh flutter once
-# optional background:
-./run.sh flutter install-auto
+
+./setup.sh              # venv + Melos + wire CODEGUARDIAN_*
+# edit config.env once (REPO_ROOT, Sentry, Bitbucket, Cursor)
+
+./setup.sh --auto       # install Flutter LaunchAgent — automation forever
+# or: ./run.sh flutter start
 ```
 
-`setup.sh` does **deps only** — LaunchAgent stays on `install-auto` / first `start`.
-
-## Day-to-day
-
-Same as before:
+Same bash automation model as classic Sentry Auto-Fix: deps once, then background daemon. CodeGuardian validate runs inside each Flutter fix cycle automatically.
 
 ```bash
-./run.sh flutter once
-./run.sh flutter start
 ./run.sh flutter status
+./run.sh flutter auto-status
+./run.sh flutter stop-auto
+./run.sh flutter once          # foreground one-shot
 ```
 
 CodeGuardian alone:

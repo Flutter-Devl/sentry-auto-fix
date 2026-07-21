@@ -1153,7 +1153,7 @@ DAEMON_LOG="${LOG_DIR}/daemon.log"
 DAEMON_ERR="${LOG_DIR}/daemon.err"
 
 install_auto() {
-  local abs_run abs_dir uid domain
+  local abs_run abs_dir uid domain daemon_path dart_bin flutter_bin dart_dir flutter_dir
   abs_run="${SCRIPT_DIR}/run.sh"
   abs_dir="${SCRIPT_DIR}"
   uid="$(id -u)"
@@ -1161,6 +1161,18 @@ install_auto() {
 
   mkdir -p "${LOG_DIR}" "${HOME}/Library/LaunchAgents"
   chmod +x "$abs_run"
+
+  # Capture Flutter/Dart locations at install time so the LaunchAgent can run
+  # CodeGuardian validate (dart) the same way an interactive shell can.
+  dart_bin="$(command -v dart 2>/dev/null || true)"
+  flutter_bin="$(command -v flutter 2>/dev/null || true)"
+  dart_dir=""
+  flutter_dir=""
+  [[ -n "$dart_bin" ]] && dart_dir="$(cd "$(dirname "$dart_bin")" && pwd)"
+  [[ -n "$flutter_bin" ]] && flutter_dir="$(cd "$(dirname "$flutter_bin")" && pwd)"
+  daemon_path="${dart_dir}:${flutter_dir}:${HOME}/.pub-cache/bin:${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+  # Collapse empty segments from missing dart/flutter
+  daemon_path="$(echo "$daemon_path" | sed -E 's/::+/:/g; s/^://; s/:$//')"
 
   cat > "$PLIST_PATH" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -1181,7 +1193,7 @@ install_auto() {
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <string>${daemon_path}</string>
     <key>HOME</key>
     <string>${HOME}</string>
   </dict>
@@ -1206,6 +1218,7 @@ PLIST
   echo "Auto-run installed."
   echo "  Starts on Mac login, restarts if it crashes"
   echo "  Runs: fix issue → wait ${POLL_SECONDS}s → next issue (forever)"
+  echo "  PATH includes dart/flutter for CodeGuardian: ${daemon_path}"
   echo ""
   echo "Monitor:"
   echo "  tail -f ${DAEMON_LOG}"
