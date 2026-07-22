@@ -1050,7 +1050,9 @@ Fix quality — long-term, production-safe (NOT quick hacks):
 - Do NOT: break existing user flows — if the fix could regress core paths, pick a safer option or print NO_ACTION
 - Prefer: minimal diff that a senior engineer would merge — correct, readable, maintainable
 - If the only viable "fix" is a hack, filter, or high regression risk → print NO_ACTION (do not push a bad PR)
-- In pr-body.md "Possible Solutions": include a rejected **Sentry filter / beforeSend** option and explain why hiding events is NOT a real fix
+- **Possible Solutions = real fixes only.** Every option must be a change that stops the bug in app code (lifecycle, null/type, auth, routing, etc.).
+- **NEVER list** `beforeSend`, `_sentryBeforeSend`, Sentry event filters, "drop this error in Sentry", or catch-and-ignore as a Possible Solution — those are not solutions; they only hide telemetry while the crash/bug still happens.
+- Do not invent fake alternatives for the PR write-up. If only one sound root-cause fix exists, list 2 real variants of that fix (e.g. Timer cancel vs. WidgetsBinding post-frame) — not a filter option.
 
 Procedure:
 1) PHASE: searching_sentry — fetch unresolved issues:
@@ -1084,14 +1086,16 @@ Procedure:
    - **Summary:** one line — what failed and where in ${pattern_hint}
 
    ## Possible Solutions
+   List 2–3 **actual code fixes** only (each would stop the bug if implemented).
+   Do NOT include beforeSend / Sentry filters / swallow-error hacks as options.
    1. **Option A — (name)** — what it is. Pros: … Cons: …
    2. **Option B — (name)** — what it is. Pros: … Cons: …
    3. **Option C — (optional)** — what it is. Pros: … Cons: …
 
    ## Chosen Solution & Why
    - **Picked:** Option N — (short name)
-   - **Why:** why this over the others (root cause, matches app patterns, lowest regression risk, long-term maintainable)
-   - **Why not a quick fix:** one line on why hack/suppress-only options were rejected
+   - **Why:** why this over the other real options (root cause, matches app patterns, lowest regression risk, long-term maintainable)
+   - **Rejected non-fixes (do not implement):** briefly note that Sentry beforeSend / event filters are banned for this issue class — they hide noise but do not fix the bug
 
    ## Fix Strategy
    - **Root cause:** what actually failed and why
@@ -1109,7 +1113,7 @@ Procedure:
    1. Deploy / verify the fix on ${SENTRY_PROJECT_SLUG} (staging first)
    2. Confirm **new events stopped** in Sentry (not just filtered — check issue event graph)
    3. Open the issue link and click **Resolve** (or run: ./run.sh resolve-issue <SHORT_ID>)
-   4. Note: beforeSend filters do NOT resolve issues — they only hide new events; prefer root-cause fixes
+   4. Note: do **not** use beforeSend to “clear” the issue — filters hide events; only a root-cause deploy stops them
 
    Then print final lines exactly:
    ISSUE_SHORT_ID=...
