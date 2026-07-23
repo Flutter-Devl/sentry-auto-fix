@@ -445,8 +445,44 @@ PY
     return 0
   fi
 
+  # Persist a short human reason for Slack (avoid "check run.log")
+  local pr_err
+  pr_err="$(
+    python3 - "$http_code" "$response" <<'PY'
+import json, sys
+code, raw = sys.argv[1], sys.argv[2]
+msg = ""
+try:
+    data = json.loads(raw)
+    err = data.get("error") or {}
+    if isinstance(err, dict):
+        msg = err.get("message") or ""
+    if not msg:
+        msg = data.get("message") or data.get("error") or ""
+    if isinstance(msg, dict):
+        msg = msg.get("message") or str(msg)
+    fields = (err.get("fields") if isinstance(err, dict) else None) or data.get("fields") or {}
+    if isinstance(fields, dict) and fields:
+        bits = []
+        for k, v in fields.items():
+            if isinstance(v, list):
+                bits.append(f"{k}: {', '.join(str(x) for x in v)}")
+            else:
+                bits.append(f"{k}: {v}")
+        extra = "; ".join(bits)
+        msg = f"{msg} ({extra})" if msg else extra
+except Exception:
+    msg = (raw or "").strip().replace("\n", " ")[:240]
+print(f"Bitbucket PR create failed (HTTP {code}): {msg or 'unknown error'}"[:500])
+PY
+  )"
   log_line "PR create failed (HTTP ${http_code})"
-  echo "PR create failed (HTTP ${http_code}). Response saved to logs."
+  log_line "PR_CREATE_ERROR=${pr_err}"
+  echo "PR_CREATE_ERROR=${pr_err}" >> "$LAST_RUN_FILE"
+  if [[ -f "${STATE_DIR}/run-result.env" ]]; then
+    echo "PR_CREATE_ERROR=${pr_err}" >> "${STATE_DIR}/run-result.env"
+  fi
+  echo "PR create failed (HTTP ${http_code}). ${pr_err}"
   echo "$response" >> "$LOG_FILE"
   return 1
 }
@@ -571,6 +607,17 @@ read_detail_file() {
   fi
 }
 
+read_codeguardian_slack_detail() {
+  local path="${STATE_DIR}/codeguardian-detail.txt"
+  if [[ ! -f "$path" ]]; then
+    echo "CodeGuardian: no detail file"
+    return 0
+  fi
+  ensure_python_env
+  "$PYTHON_BIN" "${SCRIPT_DIR}/codeguardian_summary.py" "$path" 2>/dev/null \
+    || echo "CodeGuardian finished (summary unavailable)"
+}
+
 track_created_pr() {
   local pr_id="$1"
   local pr_url="$2"
@@ -615,6 +662,7 @@ poll_merged_prs() {
 slack_notify_run_outcome() {
   local agent_exit="${1:-0}"
   local short_id tier branch pr_url issue_url detail gate_reason cg_status test_result test_command
+  local pr_create_error=""
   local common_args=()
   local gate_summary=""
 
@@ -627,6 +675,7 @@ slack_notify_run_outcome() {
   cg_status="$(parse_last_run_field "CODEGUARDIAN_STATUS")"
   test_result="$(parse_last_run_field "TEST_RESULT")"
   test_command="$(parse_last_run_field "TEST_COMMAND")"
+  pr_create_error="$(parse_last_run_field "PR_CREATE_ERROR")"
 
   common_args=(
     ${short_id:+--issue-short-id "$short_id"}
@@ -662,15 +711,15 @@ slack_notify_run_outcome() {
     return 0
   fi
 
-  # CodeGuardian outcome (explicit Slack message when enabled and run)
+  # CodeGuardian outcome — human-readable summary (not raw JSON)
   if [[ "${SLACK_NOTIFY_CODEGUARDIAN}" == "true" ]]; then
     if [[ "$cg_status" == "failed" ]]; then
-      detail="$(read_detail_file "${STATE_DIR}/codeguardian-detail.txt")"
+      detail="$(read_codeguardian_slack_detail)"
       slack_notify "codeguardian_failed" "${common_args[@]}" \
         --detail "${detail:-CodeGuardian validate failed}"
       return 0
     elif [[ "$cg_status" == "passed" ]]; then
-      detail="$(read_detail_file "${STATE_DIR}/codeguardian-detail.txt")"
+      detail="$(read_codeguardian_slack_detail)"
       slack_notify "codeguardian_passed" "${common_args[@]}" \
         --detail "${detail:-CodeGuardian validate passed}"
       gate_summary+="codeguardian=PASSED; "
@@ -698,8 +747,12 @@ slack_notify_run_outcome() {
   elif [[ -n "$branch" ]]; then
     if [[ "${BITBUCKET_PR_ENABLED}" != "true" ]]; then
       detail="BITBUCKET_PR_ENABLED=false — open PR manually in Bitbucket"
+    elif [[ -n "$pr_create_error" ]]; then
+      detail="$pr_create_error"
+    elif [[ "$branch" == "none" || "$branch" == "null" ]]; then
+      detail="PR not created: invalid BRANCH_NAME='${branch}' (agent did not push a real fix branch)"
     else
-      detail="PR was not created — check run.log"
+      detail="PR not created for branch \`${branch}\` (Bitbucket API did not return a PR URL — see PR_CREATE_ERROR in run-result.env)"
     fi
     slack_notify "branch_pushed" "${common_args[@]}" --detail "$detail"
   fi
@@ -818,8 +871,11 @@ maybe_create_pr_from_last_run() {
   short_id="$(parse_last_run_field "ISSUE_SHORT_ID")"
   tier="$(parse_last_run_field "ISSUE_TIER")"
 
-  if [[ -z "$branch" ]]; then
-    log_line "PR skipped: could not parse BRANCH_NAME from agent output (stream-json)"
+  if [[ -z "$branch" || "$branch" == "none" || "$branch" == "null" ]]; then
+    local skip_reason="PR skipped: invalid BRANCH_NAME='${branch:-empty}' (agent did not push a real fix branch)"
+    log_line "$skip_reason"
+    echo "PR_CREATE_ERROR=${skip_reason}" >> "${STATE_DIR}/run-result.env"
+    echo "PR_CREATE_ERROR=${skip_reason}" >> "$LAST_RUN_FILE"
     return 0
   fi
 
