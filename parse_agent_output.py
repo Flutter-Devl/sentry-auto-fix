@@ -20,18 +20,44 @@ FIELDS = (
     "TEST_RESULT",
 )
 
+# Placeholder values agents sometimes emit with NO_ACTION — not real branches/ids.
+_PLACEHOLDER_VALUES = frozenset(
+    {
+        "",
+        "-",
+        "none",
+        "null",
+        "n/a",
+        "na",
+        "unknown",
+        "nil",
+    }
+)
+
 
 def _field_pattern(field: str) -> re.Pattern[str]:
     return re.compile(rf"(?:^|\n){re.escape(field)}=([^\n`]+)")
 
 
+def _normalize_value(value: str) -> str:
+    value = (value or "").strip().strip("`").strip()
+    if value.lower() in _PLACEHOLDER_VALUES:
+        return ""
+    if value.upper() == "NONE":
+        return ""
+    return value
+
+
 def ingest_text(text: str, found: dict[str, str], no_action: bool) -> bool:
-    if re.search(r"(?:^|\n)NO_ACTION\s*(?:\n|$)", text.strip()):
+    if re.search(r"(?:^|\n)\*{0,2}NO_ACTION\*{0,2}\s*(?:\n|$)", text.strip(), re.I):
         no_action = True
     for field in FIELDS:
         match = _field_pattern(field).search(text)
         if match:
-            found[field] = match.group(1).strip().strip("`")
+            normalized = _normalize_value(match.group(1))
+            if normalized:
+                found[field] = normalized
+            # Do not store placeholder values like BRANCH_NAME=none
     return no_action
 
 
@@ -62,8 +88,13 @@ def parse_log(path: Path) -> tuple[dict[str, str], bool]:
                 no_action = ingest_text(part["text"], found, no_action)
 
     no_action = ingest_text(content, found, no_action)
-    if found["BRANCH_NAME"]:
+    # A real fix branch clears NO_ACTION; placeholders must not.
+    branch = found.get("BRANCH_NAME", "")
+    if branch.startswith("fix/sentry-"):
         no_action = False
+    elif no_action:
+        # Keep NO_ACTION authoritative when agent said so
+        found["BRANCH_NAME"] = ""
     return found, no_action
 
 
