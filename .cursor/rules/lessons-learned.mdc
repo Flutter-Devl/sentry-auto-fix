@@ -1,0 +1,37 @@
+---
+description: Mistakes already made in sentry-auto-fix — do not repeat
+alwaysApply: true
+---
+
+# Lessons learned (do not repeat)
+
+When changing `run.sh`, parsers, Slack, quality gates, or CodeGuardian wiring, treat these as hard constraints.
+
+## NO_ACTION must mean no gates, no success Slack
+
+**Mistake:** Agent printed `NO_ACTION` plus placeholders (`BRANCH_NAME=none`, `ISSUE_SHORT_ID=NONE`, `TEST_RESULT=none`). Parser treated `none` as a real branch → quality gates ran CodeGuardian on the unchanged worktree → Slack posted tests/CG/gates **passed** and tried PR create (`branch not found: none`).
+
+**Rules:**
+- Placeholders (`none`, `NONE`, `null`, `n/a`) are **not** values. Never treat them as a branch, issue id, or test result.
+- `NO_ACTION=true` ⇒ skip quality gates, skip PR create, Slack only `no_action` (never `tests_passed` / `codeguardian_passed` / `gates_passed` / `branch_pushed`).
+- Gates and success Slack require a real branch matching `fix/sentry-*`.
+- On `NO_ACTION`, agent must **omit** `BRANCH_NAME=` / `ISSUE_*` / `TEST_*` lines entirely — do not invent placeholders.
+
+## Slack events must match reality
+
+**Mistake:** Misleading “passed” messages when nothing was fixed; CG Slack dumped raw JSON; only draft-PR events when CG/tests were skipped or mis-wired.
+
+**Rules:**
+- Never announce gate/test/CG success unless that gate actually ran for a real fix branch this cycle.
+- CodeGuardian Slack detail must be human-readable summaries, not raw JSON dumps.
+- Wire all intended status events (tests, CG, gates, PR created/merged/declined, no_action) — do not assume one event implies the others.
+
+## Fix quality / agent prompts
+
+**Mistake:** Agent listed `beforeSend` / Sentry filter hacks under Possible Solutions.
+
+**Rules:** Possible Solutions must be real product fixes only. Quality gates still ban beforeSend-style diffs for tier1/2. Do not weaken that.
+
+## Before claiming a bug is fixed
+
+Verify the failure path with a reparse or dry check (e.g. `NO_ACTION` + `BRANCH_NAME=none` → `NO_ACTION=true`, gates skipped). Do not assume parser + Slack short-circuit both work after only one side is patched.

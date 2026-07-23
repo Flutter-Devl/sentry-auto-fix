@@ -541,8 +541,8 @@ run_quality_gates() {
 
   local branch
   branch="$(parse_last_run_field "BRANCH_NAME")"
-  if [[ -z "$branch" ]]; then
-    log_line "quality-gates: skipped (no branch)"
+  if [[ -z "$branch" || "$branch" == "none" || "$branch" == "null" || "$branch" != fix/sentry-* ]]; then
+    log_line "quality-gates: skipped (no real fix branch; BRANCH_NAME='${branch:-empty}')"
     return 0
   fi
 
@@ -696,6 +696,14 @@ slack_notify_run_outcome() {
   if last_run_no_action; then
     slack_notify "no_action" "${common_args[@]}" \
       --detail "No tier1/tier2/tier3 candidate to fix this cycle"
+    return 0
+  fi
+
+  # Defense: never announce tests/CG/PR success without a real fix branch.
+  # (Stale gate status or agent placeholders like BRANCH_NAME=none must not look like a pass.)
+  if [[ -z "$branch" || "$branch" == "none" || "$branch" == "null" || "$branch" != fix/sentry-* ]]; then
+    slack_notify "no_action" "${common_args[@]}" \
+      --detail "No real fix branch this cycle (BRANCH_NAME='${branch:-empty}') — skipped tests/CodeGuardian Slack"
     return 0
   fi
 
