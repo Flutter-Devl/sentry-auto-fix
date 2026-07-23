@@ -75,16 +75,26 @@ def summarize_codeguardian_output(raw: str, *, max_findings: int = 8) -> str:
     # Fallback: reconstruct findings from truncated/fragmented CG tails
     # (older runs only kept the last 40 lines of JSON).
     if not findings:
-        for block in re.findall(r"\{[^{}]+\}", text, re.S):
+        # Normalize a leading mid-object fragment so it has braces
+        normalized = text
+        if '"ruleId"' in text and not re.search(r'\{\s*"ruleId"', text):
+            # Prepend brace before first field of a truncated object
+            normalized = re.sub(
+                r'(exit=\d+\s*)("(?:ruleId|category|severity|file|message)")',
+                r"\1{\n\2",
+                text,
+                count=1,
+            )
+        for block in re.findall(r"\{[^{}]+\}", normalized, re.S):
             if '"message"' not in block and '"ruleId"' not in block:
                 continue
 
-            def _field(name: str) -> str:
-                m = re.search(rf'"{name}"\s*:\s*"((?:\\.|[^"\\])*)"', block)
+            def _field(name: str, src: str = block) -> str:
+                m = re.search(rf'"{name}"\s*:\s*"((?:\\.|[^"\\])*)"', src)
                 return m.group(1) if m else ""
 
-            def _num(name: str) -> int | None:
-                m = re.search(rf'"{name}"\s*:\s*(\d+)', block)
+            def _num(name: str, src: str = block) -> int | None:
+                m = re.search(rf'"{name}"\s*:\s*(\d+)', src)
                 return int(m.group(1)) if m else None
 
             rule = _field("ruleId") or "finding"
