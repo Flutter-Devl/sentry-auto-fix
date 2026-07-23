@@ -168,7 +168,7 @@ def sync_from_bitbucket(
                 if not feedback:
                     continue
             else:
-                feedback = _declined_pr_reason(pr)
+                feedback = _declined_pr_reason(pr, client)
 
             if not feedback:
                 continue
@@ -213,7 +213,27 @@ def _reviewer_from_pr(pr: dict[str, Any]) -> str:
     return ""
 
 
-def _declined_pr_reason(pr: dict[str, Any]) -> str:
+def _declined_pr_reason(pr: dict[str, Any], client: Any | None = None) -> str:
+    """Prefer reviewer comment text; fall back to description/title."""
+    pr_id = pr.get("id")
+    if client is not None and pr_id is not None:
+        try:
+            from pr_tracker import extract_rejection_reason
+
+            # Reconstruct workspace/repo from client.base
+            # .../repositories/{workspace}/{repo_slug}
+            parts = client.base.rstrip("/").split("/")
+            workspace, repo_slug = parts[-2], parts[-1]
+            return extract_rejection_reason(
+                client.session,
+                workspace=workspace,
+                repo_slug=repo_slug,
+                pr_id=int(pr_id),
+                pr_data=pr,
+            )
+        except Exception:
+            pass
+
     title = pr.get("title") or ""
     desc = pr.get("description") or ""
     for text in (desc, title):

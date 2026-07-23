@@ -57,6 +57,8 @@ Bot token takes priority when both are set.
 
 **Merged / declined:** messages are sent on the **next** autofix cycle (daemon/`once`), not instantly when someone clicks merge in Bitbucket.
 
+For **declined** PRs, Slack includes **Rejection reason** from the reviewer’s Bitbucket comment (when present), and stores it in rejection lessons for future agent runs.
+
 ## PR merged
 
 Tracked in `.state/<profile>/tracked-prs.json` and polled each cycle (~`POLL_SECONDS`).

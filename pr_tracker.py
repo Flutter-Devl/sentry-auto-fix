@@ -114,6 +114,119 @@ def fetch_pr(
     return resp.json()
 
 
+def fetch_pr_comments(
+    session: requests.Session,
+    *,
+    workspace: str,
+    repo_slug: str,
+    pr_id: int,
+    pagelen: int = 50,
+) -> list[dict[str, Any]]:
+    url = (
+        f"https://api.bitbucket.org/2.0/repositories/"
+        f"{workspace}/{repo_slug}/pullrequests/{pr_id}/comments"
+    )
+    resp = session.get(url, params={"pagelen": pagelen}, timeout=30)
+    if resp.status_code != 200:
+        return []
+    return list(resp.json().get("values") or [])
+
+
+def fetch_pr_activity(
+    session: requests.Session,
+    *,
+    workspace: str,
+    repo_slug: str,
+    pr_id: int,
+    pagelen: int = 50,
+) -> list[dict[str, Any]]:
+    url = (
+        f"https://api.bitbucket.org/2.0/repositories/"
+        f"{workspace}/{repo_slug}/pullrequests/{pr_id}/activity"
+    )
+    resp = session.get(url, params={"pagelen": pagelen}, timeout=30)
+    if resp.status_code != 200:
+        return []
+    return list(resp.json().get("values") or [])
+
+
+def extract_rejection_reason(
+    session: requests.Session,
+    *,
+    workspace: str,
+    repo_slug: str,
+    pr_id: int,
+    pr_data: dict[str, Any] | None = None,
+) -> str:
+    """
+    Best-effort reason a reviewer gave when declining a PR.
+
+    Bitbucket has no dedicated decline-reason field; reasons usually live in
+    PR comments or activity (comment / update) around the decline.
+    """
+    pr_data = pr_data or {}
+    comments = fetch_pr_comments(
+        session, workspace=workspace, repo_slug=repo_slug, pr_id=pr_id
+    )
+
+    reject_needles = (
+        "reject",
+        "decline",
+        "do not merge",
+        "don't merge",
+        "changes requested",
+        "not acceptable",
+        "beforeSend",
+        "before_send",
+        "filter only",
+        "no_action",
+        "wrong fix",
+        "incorrect",
+        "should not",
+        "please fix",
+        "needs",
+    )
+
+    scored: list[tuple[int, str]] = []
+    for comment in comments:
+        raw = ((comment.get("content") or {}).get("raw") or "").strip()
+        if not raw or len(raw) < 3:
+            continue
+        # Skip automated autofix boilerplate
+        if raw.startswith("Automated Sentry fix"):
+            continue
+        lowered = raw.lower()
+        score = 1
+        if any(n.lower() in lowered for n in reject_needles):
+            score += 5
+        # Prefer newer comments (Bitbucket returns newest-first typically)
+        scored.append((score, raw))
+
+    if scored:
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return scored[0][1][:800]
+
+    # Activity stream: last human comment update
+    for item in fetch_pr_activity(
+        session, workspace=workspace, repo_slug=repo_slug, pr_id=pr_id
+    ):
+        comment = item.get("comment") or {}
+        raw = ((comment.get("content") or {}).get("raw") or "").strip()
+        if raw and not raw.startswith("Automated Sentry fix"):
+            return raw[:800]
+        update = item.get("update") or {}
+        reason = (update.get("reason") or update.get("description") or "").strip()
+        if reason:
+            return reason[:800]
+
+    desc = (pr_data.get("description") or "").strip()
+    if desc and "reject" in desc.lower():
+        return desc[:800]
+
+    title = (pr_data.get("title") or "").strip()
+    return f"PR declined (no reviewer comment found){f': {title}' if title else ''}"
+
+
 def poll_merged(
     state_dir: Path,
     *,
@@ -194,13 +307,39 @@ def poll_merged(
                 f"Merged by: {closed_by}" if closed_by else "",
                 f"Merge commit: `{merge_commit}`" if merge_commit else "",
             ]
+            rejection_reason = ""
         else:
             event = "pr_declined"
+            rejection_reason = extract_rejection_reason(
+                session,
+                workspace=workspace,
+                repo_slug=repo_slug,
+                pr_id=pr_id,
+                pr_data=data,
+            )
             detail_parts = [
                 f"Title: {title}" if title else "",
                 f"Declined by: {closed_by}" if closed_by else "",
-                "Bitbucket state: DECLINED",
+                f"Rejection reason: {rejection_reason}" if rejection_reason else "",
             ]
+            row["rejection_reason"] = rejection_reason
+            # Persist for future agent runs
+            try:
+                from rejection_lessons import record_lesson
+
+                if rejection_reason and not rejection_reason.startswith(
+                    "PR declined (no reviewer comment found)"
+                ):
+                    record_lesson(
+                        state_dir,
+                        issue_short_id=row.get("issue_short_id") or "UNKNOWN",
+                        reason=rejection_reason,
+                        branch=branch,
+                        reviewer=closed_by,
+                        source="bitbucket:declined",
+                    )
+            except Exception as exc:  # noqa: BLE001 — never block Slack notify
+                print(f"pr-tracker: record lesson failed: {exc}")
         detail = " | ".join(p for p in detail_parts if p)
 
         can_notify = notify and ((bot_token and channel_id) or webhook_url)

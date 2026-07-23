@@ -115,7 +115,7 @@ class PrTrackerTests(unittest.TestCase):
                 self.assertEqual(n2, 0)
                 self.assertEqual(notify.call_count, 1)
 
-    def test_poll_declined_notifies(self) -> None:
+    def test_poll_declined_includes_rejection_reason(self) -> None:
         from pr_tracker import poll_merged
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -135,8 +135,11 @@ class PrTrackerTests(unittest.TestCase):
                 "closed_by": {"display_name": "Carol"},
             }
             with patch("pr_tracker.fetch_pr", return_value=fake_pr), patch(
-                "pr_tracker.notify_run_outcome"
-            ) as notify:
+                "pr_tracker.extract_rejection_reason",
+                return_value="Reject: lifecycle fix incomplete, need mounted check",
+            ), patch("pr_tracker.notify_run_outcome") as notify, patch(
+                "rejection_lessons.record_lesson"
+            ):
                 n = poll_merged(
                     state,
                     workspace="ws",
@@ -148,6 +151,32 @@ class PrTrackerTests(unittest.TestCase):
                 )
                 self.assertEqual(n, 1)
                 self.assertEqual(notify.call_args.kwargs["event"], "pr_declined")
+                detail = notify.call_args.kwargs["detail"]
+                self.assertIn("Rejection reason:", detail)
+                self.assertIn("lifecycle fix incomplete", detail)
+
+    def test_extract_rejection_reason_prefers_reviewer_comment(self) -> None:
+        from pr_tracker import extract_rejection_reason
+
+        comments = [
+            {
+                "content": {
+                    "raw": "Reject: beforeSend is not acceptable, fix root cause"
+                }
+            },
+            {"content": {"raw": "Automated Sentry fix.\n\n**Issue:** Z-1"}},
+        ]
+        with patch("pr_tracker.fetch_pr_comments", return_value=comments), patch(
+            "pr_tracker.fetch_pr_activity", return_value=[]
+        ):
+            reason = extract_rejection_reason(
+                session=object(),  # type: ignore[arg-type]
+                workspace="ws",
+                repo_slug="repo",
+                pr_id=1,
+                pr_data={"title": "fix(sentry): Z-1"},
+            )
+        self.assertIn("beforeSend is not acceptable", reason)
 
 
 if __name__ == "__main__":
