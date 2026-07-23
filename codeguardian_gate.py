@@ -4,11 +4,31 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
 import subprocess
 import sys
 from pathlib import Path
+
+
+def _extract_json_payload(text: str) -> str | None:
+    """Return the largest parseable JSON object/array substring, if any."""
+    text = text.strip()
+    if not text:
+        return None
+    for open_ch, close_ch in (("{", "}"), ("[", "]")):
+        start = text.find(open_ch)
+        end = text.rfind(close_ch)
+        if start < 0 or end <= start:
+            continue
+        candidate = text[start : end + 1]
+        try:
+            json.loads(candidate)
+            return candidate
+        except json.JSONDecodeError:
+            continue
+    return None
 
 
 def run_codeguardian(
@@ -21,16 +41,13 @@ def run_codeguardian(
     """
     Run CodeGuardian CLI against the fix worktree.
 
-    cli examples:
-      - /usr/local/bin/codeguardian
-      - dart run /path/to/packages/codeguardian_cli/bin/codeguardian.dart
+    Returns (ok, detail). Detail prefers full JSON when present so Slack can
+    summarize findings; falls back to a short text tail.
     """
     if not cli.strip():
         return False, "CODEGUARDIAN_CLI is empty"
 
-    # Split so "dart run path/to/bin.dart" works
     parts = shlex.split(cli)
-    # Resolve a single relative executable (e.g. vendor/.../codeguardian.sh)
     if len(parts) == 1 and not Path(parts[0]).is_absolute():
         resolved = Path(parts[0]).expanduser().resolve()
         if resolved.exists():
@@ -51,9 +68,14 @@ def run_codeguardian(
         return False, f"CodeGuardian timed out after {timeout}s"
 
     out = ((proc.stdout or "") + (proc.stderr or "")).strip()
-    tail = "\n".join(out.splitlines()[-40:])
-    # CodeGuardian: 0 pass, 1 gate failure, 2 tool error
     ok = proc.returncode == 0
+    payload = _extract_json_payload(out)
+    if payload:
+        if len(payload) > 200_000:
+            payload = payload[:200_000]
+        return ok, f"exit={proc.returncode}\n{payload}"
+
+    tail = "\n".join(out.splitlines()[-40:])
     return ok, f"exit={proc.returncode}\n{tail}"
 
 
@@ -62,7 +84,9 @@ def main() -> int:
     parser.add_argument("--worktree", required=True)
     parser.add_argument("--cli", default=os.environ.get("CODEGUARDIAN_CLI", ""))
     parser.add_argument("--mode", default=os.environ.get("CODEGUARDIAN_MODE", "validate"))
-    parser.add_argument("--timeout", type=int, default=int(os.environ.get("CODEGUARDIAN_TIMEOUT", "600")))
+    parser.add_argument(
+        "--timeout", type=int, default=int(os.environ.get("CODEGUARDIAN_TIMEOUT", "600"))
+    )
     args = parser.parse_args()
 
     if not args.cli:

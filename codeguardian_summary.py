@@ -72,17 +72,38 @@ def summarize_codeguardian_output(raw: str, *, max_findings: int = 8) -> str:
             elif "ok" in data:
                 gate_ok = bool(data["ok"])
 
-    # Fallback: array-only payload
+    # Fallback: reconstruct findings from truncated/fragmented CG tails
+    # (older runs only kept the last 40 lines of JSON).
     if not findings:
-        arr_start = text.find("[")
-        arr_end = text.rfind("]")
-        if arr_start >= 0 and arr_end > arr_start:
-            try:
-                arr = json.loads(text[arr_start : arr_end + 1])
-                if isinstance(arr, list):
-                    findings = [f for f in arr if isinstance(f, dict)]
-            except json.JSONDecodeError:
-                pass
+        for block in re.findall(r"\{[^{}]+\}", text, re.S):
+            if '"message"' not in block and '"ruleId"' not in block:
+                continue
+
+            def _field(name: str) -> str:
+                m = re.search(rf'"{name}"\s*:\s*"((?:\\.|[^"\\])*)"', block)
+                return m.group(1) if m else ""
+
+            def _num(name: str) -> int | None:
+                m = re.search(rf'"{name}"\s*:\s*(\d+)', block)
+                return int(m.group(1)) if m else None
+
+            rule = _field("ruleId") or "finding"
+            msg = _field("message")
+            path = _field("file")
+            if not (msg or path):
+                continue
+            findings.append(
+                {
+                    "ruleId": rule,
+                    "category": _field("category") or "unknown",
+                    "severity": _field("severity") or "unknown",
+                    "file": path,
+                    "line": _num("line"),
+                    "message": bytes(msg, "utf-8").decode("unicode_escape")
+                    if msg
+                    else "",
+                }
+            )
 
     status = "PASSED" if exit_code == "0" else "FAILED"
     if gate_ok is True:
