@@ -33,6 +33,7 @@ SAMPLE = r'''exit=0
 '''
 
 FRAGMENTED = '''exit=0
+    {
       "category": "style",
       "severity": "low",
       "file": "/x/packages/foo/lib/main.dart",
