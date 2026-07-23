@@ -81,7 +81,6 @@ class PrTrackerTests(unittest.TestCase):
                 branch="fix/sentry-y",
                 issue_short_id="Y-1",
             )
-
             fake_pr = {
                 "state": "MERGED",
                 "title": "fix(sentry): Y-1",
@@ -90,7 +89,6 @@ class PrTrackerTests(unittest.TestCase):
                 "closed_by": {"display_name": "Bob"},
                 "merge_commit": {"hash": "deadbeefcafebabe"},
             }
-
             with patch("pr_tracker.fetch_pr", return_value=fake_pr), patch(
                 "pr_tracker.notify_run_outcome"
             ) as notify:
@@ -104,9 +102,7 @@ class PrTrackerTests(unittest.TestCase):
                     profile="flutter",
                 )
                 self.assertEqual(n, 1)
-                notify.assert_called_once()
                 self.assertEqual(notify.call_args.kwargs["event"], "pr_merged")
-
                 n2 = poll_merged(
                     state,
                     workspace="ws",
@@ -118,6 +114,40 @@ class PrTrackerTests(unittest.TestCase):
                 )
                 self.assertEqual(n2, 0)
                 self.assertEqual(notify.call_count, 1)
+
+    def test_poll_declined_notifies(self) -> None:
+        from pr_tracker import poll_merged
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            track_pr(
+                state,
+                pr_id=8,
+                pr_url="https://example/pr/8",
+                branch="fix/sentry-z",
+                issue_short_id="Z-1",
+            )
+            fake_pr = {
+                "state": "DECLINED",
+                "title": "fix(sentry): Z-1",
+                "links": {"html": {"href": "https://example/pr/8"}},
+                "source": {"branch": {"name": "fix/sentry-z"}},
+                "closed_by": {"display_name": "Carol"},
+            }
+            with patch("pr_tracker.fetch_pr", return_value=fake_pr), patch(
+                "pr_tracker.notify_run_outcome"
+            ) as notify:
+                n = poll_merged(
+                    state,
+                    workspace="ws",
+                    repo_slug="repo",
+                    access_token="token",
+                    bot_token="xoxb-test",
+                    channel_id="C123",
+                    profile="flutter",
+                )
+                self.assertEqual(n, 1)
+                self.assertEqual(notify.call_args.kwargs["event"], "pr_declined")
 
 
 if __name__ == "__main__":

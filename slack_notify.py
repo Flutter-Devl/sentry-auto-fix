@@ -143,10 +143,13 @@ def build_run_outcome_message(
         "no_action": ("⏭️", "No actionable issue"),
         "pr_created": ("📋", "Draft PR created"),
         "pr_merged": ("✅", "PR merged"),
+        "pr_declined": ("❌", "PR declined / rejected"),
         "branch_pushed": ("📤", "Branch pushed (no auto-PR)"),
         "quality_gate_failed": ("🚫", "Quality gate failed — PR blocked"),
+        "tests_passed": ("🧪", "Flutter tests passed"),
         "codeguardian_passed": ("🛡️", "CodeGuardian passed"),
         "codeguardian_failed": ("🛑", "CodeGuardian failed — PR blocked"),
+        "gates_passed": ("✅", "Quality gates passed"),
         "agent_failed": ("⚠️", "Agent run failed"),
     }
     emoji, heading = labels.get(event, ("ℹ️", event.replace("_", " ").title()))

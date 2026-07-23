@@ -128,7 +128,7 @@ def poll_merged(
     profile: str = "flutter",
     notify: bool = True,
 ) -> int:
-    """Check tracked PRs; Slack-notify newly MERGED ones. Returns notify count."""
+    """Check tracked PRs; Slack-notify newly MERGED or DECLINED ones."""
     prs = load_tracked(state_dir)
     if not prs:
         print("pr-tracker: no tracked PRs")
@@ -138,8 +138,9 @@ def poll_merged(
     notified = 0
 
     for row in prs:
-        if row.get("merged_notified"):
+        if row.get("terminal_notified"):
             continue
+
         pr_id = int(row["pr_id"])
         try:
             data = fetch_pr(
@@ -152,13 +153,18 @@ def poll_merged(
         state = (data.get("state") or "").upper()
         row["bb_state"] = state
         row["updated_at"] = _now()
-        if state != "MERGED":
+        if state not in ("MERGED", "DECLINED"):
             continue
 
-        merged_by = ""
+        # Already Slack-notified for MERGED under the old flag
+        if row.get("merged_notified") and state == "MERGED":
+            row["terminal_notified"] = True
+            continue
+
         actor = data.get("closed_by") or data.get("updated_by") or {}
+        closed_by = ""
         if isinstance(actor, dict):
-            merged_by = (
+            closed_by = (
                 actor.get("display_name")
                 or actor.get("nickname")
                 or actor.get("uuid")
@@ -181,20 +187,27 @@ def poll_merged(
             or ""
         )
 
-        detail_parts = [
-            f"Title: {title}" if title else "",
-            f"Merged by: {merged_by}" if merged_by else "",
-            f"Merge commit: `{merge_commit}`" if merge_commit else "",
-        ]
+        if state == "MERGED":
+            event = "pr_merged"
+            detail_parts = [
+                f"Title: {title}" if title else "",
+                f"Merged by: {closed_by}" if closed_by else "",
+                f"Merge commit: `{merge_commit}`" if merge_commit else "",
+            ]
+        else:
+            event = "pr_declined"
+            detail_parts = [
+                f"Title: {title}" if title else "",
+                f"Declined by: {closed_by}" if closed_by else "",
+                "Bitbucket state: DECLINED",
+            ]
         detail = " | ".join(p for p in detail_parts if p)
 
-        can_notify = notify and (
-            (bot_token and channel_id) or webhook_url
-        )
+        can_notify = notify and ((bot_token and channel_id) or webhook_url)
         if can_notify:
             notify_run_outcome(
                 profile=profile,
-                event="pr_merged",
+                event=event,
                 issue_short_id=row.get("issue_short_id", ""),
                 issue_tier=row.get("issue_tier", ""),
                 branch=branch,
@@ -207,13 +220,14 @@ def poll_merged(
                 bot_token=bot_token,
                 channel_id=channel_id,
             )
-            print(f"pr-tracker: Slack notified MERGED PR #{pr_id}")
+            print(f"pr-tracker: Slack notified {state} PR #{pr_id}")
         else:
-            print(f"pr-tracker: MERGED PR #{pr_id} (Slack skipped)")
+            print(f"pr-tracker: {state} PR #{pr_id} (Slack skipped)")
 
         row["merged_notified"] = True
-        row["merged_at"] = _now()
-        row["merged_by"] = merged_by
+        row["terminal_notified"] = True
+        row["closed_at"] = _now()
+        row["closed_by"] = closed_by
         notified += 1
 
     save_tracked(state_dir, prs)

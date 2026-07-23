@@ -45,11 +45,17 @@ Bot token takes priority when both are set.
 
 | Event | When |
 |--------|------|
+| `tests_passed` | Flutter tests PASSED |
+| `codeguardian_passed` / `codeguardian_failed` | CG validate on fix worktree (`CODEGUARDIAN_ENABLED=true`) |
+| `gates_passed` | Tests (+ CG) cleared before draft PR |
 | `pr_created` | Draft Bitbucket PR opened |
-| `pr_merged` | Tracked autofix PR becomes `MERGED` (polled each cycle) |
-| `codeguardian_passed` / `codeguardian_failed` | CG validate on fix worktree |
-| `quality_gate_failed` | Tests / confidence / policy |
+| `pr_merged` / `pr_declined` | Tracked PR becomes MERGED or DECLINED (polled each cycle) |
+| `quality_gate_failed` | Tests / confidence / policy blocked PR |
 | `branch_pushed` / `agent_failed` / `no_action` | As labeled |
+
+**Important:** CodeGuardian Slack messages only appear when `CODEGUARDIAN_ENABLED=true` and the gate actually runs. If it is `false`, you will only see Draft PR (and tests_passed after this update).
+
+**Merged / declined:** messages are sent on the **next** autofix cycle (daemon/`once`), not instantly when someone clicks merge in Bitbucket.
 
 ## PR merged
 

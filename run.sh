@@ -614,8 +614,9 @@ poll_merged_prs() {
 
 slack_notify_run_outcome() {
   local agent_exit="${1:-0}"
-  local short_id tier branch pr_url issue_url detail event="" gate_reason cg_status
+  local short_id tier branch pr_url issue_url detail gate_reason cg_status test_result test_command
   local common_args=()
+  local gate_summary=""
 
   short_id="$(parse_last_run_field "ISSUE_SHORT_ID")"
   tier="$(parse_last_run_field "ISSUE_TIER")"
@@ -624,6 +625,8 @@ slack_notify_run_outcome() {
   issue_url="$(parse_last_run_field "ISSUE_URL")"
   gate_reason="$(parse_last_run_field "QUALITY_GATE_REASON")"
   cg_status="$(parse_last_run_field "CODEGUARDIAN_STATUS")"
+  test_result="$(parse_last_run_field "TEST_RESULT")"
+  test_command="$(parse_last_run_field "TEST_COMMAND")"
 
   common_args=(
     ${short_id:+--issue-short-id "$short_id"}
@@ -647,28 +650,46 @@ slack_notify_run_outcome() {
     return 0
   fi
 
-  # Explicit CodeGuardian outcomes (full detail file when present)
+  # Flutter tests outcome (explicit Slack message)
+  if [[ "${test_result}" == "PASSED" ]]; then
+    slack_notify "tests_passed" "${common_args[@]}" \
+      --detail "Command: ${test_command:-flutter test} — PASSED"
+    gate_summary+="tests=PASSED; "
+  elif [[ "${test_result}" == "FAILED" ]] || [[ "$gate_reason" == "tests" ]]; then
+    detail="$(read_detail_file "${STATE_DIR}/test-gate-detail.txt")"
+    slack_notify "quality_gate_failed" "${common_args[@]}" \
+      --detail "${detail:-Flutter tests FAILED — PR blocked}"
+    return 0
+  fi
+
+  # CodeGuardian outcome (explicit Slack message when enabled and run)
   if [[ "${SLACK_NOTIFY_CODEGUARDIAN}" == "true" ]]; then
     if [[ "$cg_status" == "failed" ]]; then
       detail="$(read_detail_file "${STATE_DIR}/codeguardian-detail.txt")"
       slack_notify "codeguardian_failed" "${common_args[@]}" \
         --detail "${detail:-CodeGuardian validate failed}"
+      return 0
     elif [[ "$cg_status" == "passed" ]]; then
       detail="$(read_detail_file "${STATE_DIR}/codeguardian-detail.txt")"
       slack_notify "codeguardian_passed" "${common_args[@]}" \
         --detail "${detail:-CodeGuardian validate passed}"
+      gate_summary+="codeguardian=PASSED; "
+    elif [[ "$cg_status" == "disabled" || "$cg_status" == "skipped" || -z "$cg_status" ]]; then
+      log_line "slack: CodeGuardian status=${cg_status:-unset} — no CG Slack message (enable CODEGUARDIAN_ENABLED=true)"
     fi
   fi
 
   if quality_gate_failed; then
-    if [[ "$gate_reason" == "codeguardian" ]]; then
-      # Already notified as codeguardian_failed above
-      return 0
-    fi
     detail="$(read_detail_file "${STATE_DIR}/test-gate-detail.txt")"
-    [[ -z "$detail" ]] && detail="Tests/confidence/policy check failed — branch may exist on origin"
+    [[ -z "$detail" ]] && detail="Quality gate failed (${gate_reason:-unknown}) — PR blocked"
     slack_notify "quality_gate_failed" "${common_args[@]}" --detail "$detail"
     return 0
+  fi
+
+  # Summary when gates cleared (before / with PR)
+  if [[ -n "$gate_summary" ]]; then
+    slack_notify "gates_passed" "${common_args[@]}" \
+      --detail "${gate_summary}ready for draft PR"
   fi
 
   if [[ -n "$pr_url" ]]; then
