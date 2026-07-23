@@ -1203,6 +1203,8 @@ Procedure:
    TEST_RESULT=PASSED|FAILED
 If no suitable issue exists, print NO_ACTION and PHASE: done.
 If you cannot explain the trigger or add a passing test for tier1/tier2, print NO_ACTION.
+When printing NO_ACTION: do **not** fill BRANCH_NAME / ISSUE_* / TEST_* with placeholders like \`none\` or \`NONE\`.
+Omit those lines entirely. Only print BRANCH_NAME=fix/sentry-... when you actually pushed a branch.
 PROMPT
 
   "$CURSOR_BIN" agent \
