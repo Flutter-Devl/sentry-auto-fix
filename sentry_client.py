@@ -106,6 +106,16 @@ class SentryClient:
         resp.raise_for_status()
         return resp.json()
 
+    def get_issue(self, issue_id: str) -> dict[str, Any]:
+        """Fetch full issue payload (status, lastSeen, count, …)."""
+        url = f"{self.base}/organizations/{self.org_slug}/issues/{issue_id}/"
+        resp = self.session.get(url, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        if not isinstance(data, dict):
+            raise RuntimeError(f"Unexpected Sentry issue payload for {issue_id}")
+        return data
+
     def resolve_issue(self, issue_id: str) -> None:
         """Mark a Sentry issue resolved (requires event:write or issue:write scope)."""
         url = f"{self.base}/organizations/{self.org_slug}/issues/{issue_id}/"
@@ -121,6 +131,19 @@ class SentryClient:
             for issue in page:
                 if issue.short_id.upper() == short_id.upper():
                     return issue.id
+        return None
+
+    def find_issue_by_short_id(self, short_id: str) -> SentryIssue | None:
+        """Find issue by short id (unresolved first, then any status)."""
+        for query in ("is:unresolved", ""):
+            for page, _link in self.iter_unresolved_issue_pages(
+                query=f"{query} {short_id}".strip(),
+                limit=25,
+                max_pages=1,
+            ):
+                for issue in page:
+                    if issue.short_id.upper() == short_id.upper():
+                        return issue
         return None
 
     @staticmethod

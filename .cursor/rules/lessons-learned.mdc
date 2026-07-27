@@ -35,3 +35,7 @@ When changing `run.sh`, parsers, Slack, quality gates, or CodeGuardian wiring, t
 ## Before claiming a bug is fixed
 
 Verify the failure path with a reparse or dry check (e.g. `NO_ACTION` + `BRANCH_NAME=none` → `NO_ACTION=true`, gates skipped). Do not assume parser + Slack short-circuit both work after only one side is patched.
+
+## Resolve after merge
+
+Do not resolve Sentry on merge immediately — wait for quiet (`lastSeen` before merge) after `SENTRY_RESOLVE_MIN_AGE_HOURS`. If still noisy, Slack warn; never force-resolve a still-firing issue.

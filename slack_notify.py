@@ -151,6 +151,11 @@ def build_run_outcome_message(
         "codeguardian_failed": ("🛑", "CodeGuardian failed — PR blocked"),
         "gates_passed": ("✅", "Quality gates passed"),
         "agent_failed": ("⚠️", "Agent run failed"),
+        "sentry_resolved": ("🎯", "Sentry issue auto-resolved"),
+        "sentry_resolve_ready": ("✋", "Sentry quiet — ready to resolve"),
+        "sentry_still_noisy": ("📡", "Sentry still receiving events after merge"),
+        "sentry_resolve_failed": ("⚠️", "Sentry resolve failed"),
+        "sentry_resolve_abandoned": ("⌛", "Sentry resolve abandoned (still noisy)"),
     }
     emoji, heading = labels.get(event, ("ℹ️", event.replace("_", " ").title()))
 

@@ -215,7 +215,9 @@ LARAVEL_BITBUCKET_PR_ENABLED=false  # flip to true once token is available
 | `SENTRY_ORG_SLUG` | Yes | Your Sentry organization slug |
 | `SENTRY_PROJECT_SLUG` | Yes | Sentry project slug to query |
 | `SENTRY_REGION_URL` | No | Default: `https://us.sentry.io` |
-| `SENTRY_AUTH_TOKEN` | Recommended | Enables REST pagination; scopes: org:read, project:read, event:read |
+| `SENTRY_AUTH_TOKEN` | Recommended | REST pagination + resolve; scopes: org:read, project:read, event:read, event:write (or issue:write) |
+| `SENTRY_RESOLVE_AFTER_MERGE` | No | `auto` (default) / `prompt` / `off` — resolve after merge when quiet |
+| `SENTRY_RESOLVE_MIN_AGE_HOURS` | No | Wait hours after merge before quiet-check (default 6) |
 | `SENTRY_QUERY` | No | Default: `is:unresolved level:error` |
 | `SENTRY_PAGE_SIZE` | No | Issues per page, max 100 (default: 100) |
 | `SENTRY_MAX_PAGES` | No | Pages to prefetch per cycle (default: 10) |

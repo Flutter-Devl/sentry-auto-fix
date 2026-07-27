@@ -76,6 +76,11 @@ SENTRY_PAGE_SIZE="${SENTRY_PAGE_SIZE:-100}"
 SENTRY_MAX_PAGES="${SENTRY_MAX_PAGES:-10}"
 SENTRY_REGION_URL="${SENTRY_REGION_URL:-https://us.sentry.io}"
 SENTRY_TRIAGE_SIMPLE_FIRST="${SENTRY_TRIAGE_SIMPLE_FIRST:-true}"
+# After Bitbucket merge: auto | prompt | off — resolve Sentry when events go quiet
+SENTRY_RESOLVE_AFTER_MERGE="${SENTRY_RESOLVE_AFTER_MERGE:-auto}"
+SENTRY_RESOLVE_MIN_AGE_HOURS="${SENTRY_RESOLVE_MIN_AGE_HOURS:-6}"
+SENTRY_RESOLVE_MAX_AGE_DAYS="${SENTRY_RESOLVE_MAX_AGE_DAYS:-14}"
+SENTRY_RESOLVE_SKEW_MINUTES="${SENTRY_RESOLVE_SKEW_MINUTES:-5}"
 POLL_SECONDS="${POLL_SECONDS:-900}"
 AUTO_INSTALL_LAUNCHAGENT="${AUTO_INSTALL_LAUNCHAGENT:-true}"
 PR_DRAFT="${PR_DRAFT:-true}"
@@ -641,12 +646,21 @@ track_created_pr() {
 }
 
 poll_merged_prs() {
-  [[ "${SLACK_NOTIFY_ENABLED}" == "true" ]] || return 0
-  [[ "${SLACK_NOTIFY_PR_MERGED}" == "true" ]] || return 0
-  slack_configured || return 0
   [[ -n "${BITBUCKET_ACCESS_TOKEN:-}" ]] || return 0
 
+  local notify_flag=()
+  if [[ "${SLACK_NOTIFY_ENABLED}" != "true" ]] \
+    || [[ "${SLACK_NOTIFY_PR_MERGED}" != "true" ]] \
+    || ! slack_configured; then
+    notify_flag=(--no-notify)
+  fi
+
   ensure_python_env
+  # Export Sentry creds for resolve-after-merge (read inside pr_tracker)
+  SENTRY_AUTH_TOKEN="${SENTRY_AUTH_TOKEN:-}" \
+  SENTRY_ORG_SLUG="${SENTRY_ORG_SLUG}" \
+  SENTRY_PROJECT_SLUG="${SENTRY_PROJECT_SLUG}" \
+  SENTRY_REGION_URL="${SENTRY_REGION_URL}" \
   "$PYTHON_BIN" "${SCRIPT_DIR}/pr_tracker.py" --state-dir "${STATE_DIR}" poll-merged \
     --workspace "${BITBUCKET_WORKSPACE}" \
     --repo-slug "${BITBUCKET_REPO_SLUG}" \
@@ -656,7 +670,12 @@ poll_merged_prs() {
     --webhook-url "${SLACK_WEBHOOK_URL}" \
     --bot-token "${SLACK_BOT_TOKEN}" \
     --channel-id "${SLACK_CHANNEL_ID}" \
-    --profile "${ACTIVE_PROFILE}" >> "$LOG_FILE" 2>&1 || log_line "pr-tracker: poll-merged failed (non-fatal)"
+    --profile "${ACTIVE_PROFILE}" \
+    --sentry-resolve-mode "${SENTRY_RESOLVE_AFTER_MERGE}" \
+    --sentry-resolve-min-age-hours "${SENTRY_RESOLVE_MIN_AGE_HOURS}" \
+    --sentry-resolve-max-age-days "${SENTRY_RESOLVE_MAX_AGE_DAYS}" \
+    --sentry-resolve-skew-minutes "${SENTRY_RESOLVE_SKEW_MINUTES}" \
+    "${notify_flag[@]}" >> "$LOG_FILE" 2>&1 || log_line "pr-tracker: poll-merged failed (non-fatal)"
 }
 
 slack_notify_run_outcome() {
@@ -782,7 +801,7 @@ PY
 build_pr_description() {
   local short_id="$1"
   local tier="$2"
-  local issue_url branch description resolve_section
+  local issue_url branch description resolve_section quality_section
 
   issue_url="$(parse_last_run_field "ISSUE_URL")"
   if [[ -z "$issue_url" && -n "$short_id" ]]; then
@@ -838,15 +857,40 @@ $(cat "$PR_BODY_FILE")"
 - **Why:** _(not captured)_"
   fi
 
+  # Always append fresh Quality checklist from this cycle's gates (tests + CodeGuardian).
+  ensure_python_env
+  local body_tmp
+  body_tmp="$(mktemp "${TMPDIR:-/tmp}/pr-body.XXXXXX")"
+  printf '%s\n' "$description" > "$body_tmp"
+  description="$("$PYTHON_BIN" "${SCRIPT_DIR}/pr_quality.py" --state-dir "${STATE_DIR}" --merge-into "$body_tmp")"
+  rm -f "$body_tmp"
+
   if [[ -n "$issue_url" ]]; then
-    resolve_section="## After merge — resolve in Sentry
+    if [[ "${SENTRY_RESOLVE_AFTER_MERGE}" == "auto" ]]; then
+      resolve_section="## After merge — Sentry resolve
+
+1. Deploy / verify the fix on **${SENTRY_PROJECT_SLUG}** (staging first if applicable)
+2. Autofix will **auto-resolve** this issue in Sentry after ~${SENTRY_RESOLVE_MIN_AGE_HOURS}h if \`lastSeen\` stays before merge (events quiet)
+3. If events continue, Slack will warn — do **not** resolve until the root cause is fixed
+4. Manual override: \`./run.sh resolve-issue ${short_id:-SHORT_ID}\`
+5. **Branch:** \`${branch:-unknown}\` is deleted automatically on merge (\`close_source_branch=true\`)"
+    elif [[ "${SENTRY_RESOLVE_AFTER_MERGE}" == "prompt" ]]; then
+      resolve_section="## After merge — Sentry resolve
+
+1. Deploy / verify the fix on **${SENTRY_PROJECT_SLUG}**
+2. When events go quiet, Slack will prompt — then run: \`./run.sh resolve-issue ${short_id:-SHORT_ID}\`
+3. Or open: ${issue_url} → **Resolve**
+4. **Branch:** \`${branch:-unknown}\` is deleted automatically on merge (\`close_source_branch=true\`)"
+    else
+      resolve_section="## After merge — resolve in Sentry
 
 1. Open the issue: ${issue_url}
 2. Deploy / verify the fix on **${SENTRY_PROJECT_SLUG}** (staging first if applicable)
 3. Confirm new events stopped (or rate dropped) in Sentry
-4. In Sentry → **Resolve** (or **Archive**) the issue
+4. In Sentry → **Resolve** (or run: \`./run.sh resolve-issue ${short_id:-SHORT_ID}\`)
 5. **Branch:** \`${branch:-unknown}\` is deleted automatically on merge (\`close_source_branch=true\`)"
-    if [[ "$description" != *"After merge — resolve in Sentry"* ]]; then
+    fi
+    if [[ "$description" != *"After merge"* ]]; then
       description="${description}
 
 ---

@@ -45,19 +45,36 @@ Bot token takes priority when both are set.
 
 | Event | When |
 |--------|------|
-| `tests_passed` | Flutter tests PASSED |
-| `codeguardian_passed` / `codeguardian_failed` | CG validate on fix worktree (`CODEGUARDIAN_ENABLED=true`) |
-| `gates_passed` | Tests (+ CG) cleared before draft PR |
+| `gates_passed` / `quality_gate_failed` | Tests + CodeGuardian outcome |
 | `pr_created` | Draft Bitbucket PR opened |
 | `pr_merged` / `pr_declined` | Tracked PR becomes MERGED or DECLINED (polled each cycle) |
-| `quality_gate_failed` | Tests / confidence / policy blocked PR |
+| `sentry_resolved` | Auto-resolved in Sentry after merge + quiet window |
+| `sentry_resolve_ready` | Quiet enough to resolve (`SENTRY_RESOLVE_AFTER_MERGE=prompt`) |
+| `sentry_still_noisy` | PR merged but issue still getting events |
+| `sentry_resolve_failed` / `sentry_resolve_abandoned` | Resolve error or gave up after max age |
 | `branch_pushed` / `agent_failed` / `no_action` | As labeled |
-
-**Important:** CodeGuardian Slack messages only appear when `CODEGUARDIAN_ENABLED=true` and the gate actually runs. If it is `false`, you will only see Draft PR (and tests_passed after this update).
 
 **Merged / declined:** messages are sent on the **next** autofix cycle (daemon/`once`), not instantly when someone clicks merge in Bitbucket.
 
+### Sentry resolve after merge
+
+```env
+SENTRY_RESOLVE_AFTER_MERGE=auto   # auto | prompt | off
+SENTRY_RESOLVE_MIN_AGE_HOURS=6
+SENTRY_RESOLVE_MAX_AGE_DAYS=14
+```
+
+- **auto** — after min age, if `lastSeen` is still before merge (± skew), resolve the issue and Slack `sentry_resolved`.
+- **prompt** — when quiet, Slack `sentry_resolve_ready` with `./run.sh resolve-issue SHORT_ID` (no auto resolve).
+- **off** — manual only.
+
+Token needs **event:write** or **issue:write** (plus read scopes) for `auto`.
+
 For **declined** PRs, Slack includes **Rejection reason** from the reviewer’s Bitbucket comment (when present), and stores it in rejection lessons for future agent runs.
+
+## PR body Quality section
+
+Draft Bitbucket PRs include a **## Quality** checklist (Tests + CodeGuardian summary) from the gate run so reviewers do not need Slack.
 
 ## PR merged
 
