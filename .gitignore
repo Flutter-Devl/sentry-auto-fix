@@ -1,4 +1,5 @@
 config.env
+data/
 .state/
 logs/
 .venv/

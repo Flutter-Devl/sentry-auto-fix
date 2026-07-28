@@ -1,0 +1,45 @@
+# Sentry Auto-Fix worker — same cloud account, dedicated host (not the API box)
+#
+# Prerequisites on the host:
+#   1. Clone abyan-app-flutter to ./data/app  (or set APP_REPO_PATH)
+#   2. Copy config.example.env → ./data/config.env and fill secrets
+#   3. Set CURSOR_API_KEY in .env or the environment
+#
+#   docker compose build
+#   docker compose run --rm autofix once      # smoke test
+#   docker compose up -d                      # poll forever
+
+services:
+  autofix:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sentry-autofix:latest
+    container_name: sentry-autofix
+    restart: unless-stopped
+    env_file:
+      - ./data/config.env
+    environment:
+      CURSOR_API_KEY: ${CURSOR_API_KEY:-}
+      CURSOR_BIN: /usr/local/bin/cursor
+      AUTO_INSTALL_LAUNCHAGENT: "false"
+      GIT_AUTHOR_NAME: ${GIT_AUTHOR_NAME:-Sentry Auto-Fix}
+      GIT_AUTHOR_EMAIL: ${GIT_AUTHOR_EMAIL:-sentry-autofix@localhost}
+      # Optional: override token for git credential helper (else use config.env)
+      BITBUCKET_ACCESS_TOKEN: ${BITBUCKET_ACCESS_TOKEN:-}
+      BITBUCKET_EMAIL: ${BITBUCKET_EMAIL:-}
+    volumes:
+      # Secrets + REPO_ROOT wiring (do not commit this file)
+      - ./data/config.env:/toolkit/config.env:ro
+      # Flutter app clone (git push needs write)
+      - ${APP_REPO_PATH:-./data/app}:/workspace/app
+      # Persist state / logs across restarts
+      - ./data/state:/toolkit/.state
+      - ./data/logs:/toolkit/logs
+      # Optional SSH key for Bitbucket (if not using HTTPS token)
+      # - ./data/ssh:/home/autofix/.ssh:ro
+    # Default CMD from Dockerfile = daemon
+    command: ["daemon"]
+    # Resource hints for the server person (adjust on host)
+    mem_limit: 8g
+    cpus: 2.0

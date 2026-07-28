@@ -2,7 +2,9 @@
 
 Automated **Sentry → Cursor Agent → Bitbucket** pipeline that detects unresolved production errors, fixes them using AI in an isolated git worktree, and pushes `fix/sentry-*` branches — one branch per Sentry issue.
 
-Works entirely on your Mac. No paid automation platform. No cloud runner.
+Works entirely on your Mac **or** a dedicated Ubuntu Docker worker. No paid automation platform.
+
+See [docs/DOCKER.md](docs/DOCKER.md) for server/container setup (same cloud account, different host from APIs).
 
 ---
 

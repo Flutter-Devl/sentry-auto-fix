@@ -1,0 +1,14 @@
+.git
+.state
+.venv
+logs
+*.log
+config.env
+data
+__pycache__
+*.pyc
+.DS_Store
+.cursor
+agent-transcripts
+*.mdc
+com.sentry.autofix.plist.example
